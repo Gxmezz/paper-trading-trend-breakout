@@ -69,3 +69,5 @@ jobs:
           path: site
       - id: deploy
         uses: actions/deploy-pages@v4
+        # si coincide con otra publicación en curso, la siguiente ejecución vuelve a publicar
+        continue-on-error: true
