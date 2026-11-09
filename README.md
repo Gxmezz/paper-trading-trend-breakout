@@ -43,7 +43,7 @@ repitan. El paper trading es precisamente la prueba con datos que nadie ha visto
 - Costes 0,20 $/oz por lado (Raw ECN: medio spread + comisión de 3 $/lote/lado + deslizamiento). Swap de largos
   6 %/año (triple el miércoles), cortos sin coste. Apalancamiento máximo 1:50.
 - Horario del oro en hora de Nueva York (se ajusta solo al horario de verano): cerrado de viernes 17:00 a domingo 18:00 y en la pausa diaria 17:00–18:00 (en Madrid, normalmente de 23:00 a 00:00).
-- Precio: perpetuo XAU_USDT de Gate.io (cotiza como el oro spot y es accesible desde los servidores de GitHub).
+- Precio: perpetuo XAU_USDT de Gate.io corregido cada minuto al oro spot. La diferencia Gate − spot se mide con las cotizaciones públicas de Swissquote (coinciden con VANTAGE:XAUUSD al céntimo) y se resta a todas las velas; el dashboard muestra la corrección aplicada.
 - Cada ejecución repite minuto a minuto lo ocurrido desde la anterior, así que los retrasos de GitHub no
   cambian el resultado. El motor reproduce exactamente el backtest (mismas operaciones y resultado).
 - Funcionamiento 24/7: cada ejecución del workflow corre el motor cada minuto durante ~5 h 40 min y, al terminar,

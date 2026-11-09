@@ -101,7 +101,8 @@ def klines(interval, limit=1000, start=None):
             p["from"] = int(start // 1000)
             p["to"] = int(min(start // 1000 + (min(limit, 1999) - 1) * sec, time.time()))
         r = requests.get(f"{GATE}/candlesticks", params=p, timeout=20); r.raise_for_status()
-        return [dict(t=int(k["t"]) * 1000, o=float(k["o"]), h=float(k["h"]), l=float(k["l"]), c=float(k["c"]),
+        d = OFFSET["value"] or 0.0      # corrección Gate -> spot (Vantage)
+        return [dict(t=int(k["t"]) * 1000, o=float(k["o"]) - d, h=float(k["h"]) - d, l=float(k["l"]) - d, c=float(k["c"]) - d,
                      ct=int(k["t"]) * 1000 + sec * 1000 - 1) for k in r.json()]
     p = {"symbol": GOLD_SYMBOL, "interval": interval, "limit": limit}
     if start is not None: p["startTime"] = int(start)
@@ -112,10 +113,59 @@ def closed_bars(interval, limit=1000, start=None):
     nowms = time.time() * 1000
     return [b for b in klines(interval, limit, start) if b["ct"] < nowms and gold_open(ms_to_dt(b["t"]))]
 
+# ---------- corrección al precio spot (≈ Vantage) ----------
+# El perpetuo de Gate se separa a veces del oro spot (p. ej. ~7 $ cerca del cierre diario). Cada ejecución mide
+# la diferencia Gate - spot con las cotizaciones públicas de Swissquote (bróker; coincide con VANTAGE:XAUUSD al
+# céntimo) y la resta a todas las velas y precios de Gate.
+OFFSET = {"value": 0.0}
+
+def spot_ref():
+    """Precio bid del oro spot (como los gráficos de MT5/Vantage). Swissquote; respaldo gold-api.com."""
+    try:
+        r = requests.get("https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD", timeout=10)
+        r.raise_for_status()
+        profs = [p for q in r.json() for p in q.get("spreadProfilePrices", [])]
+        best = min(profs, key=lambda p: p["ask"] - p["bid"])
+        return float(best["bid"]), "Swissquote"
+    except Exception:
+        pass
+    try:
+        r = requests.get("https://api.gold-api.com/price/XAU", timeout=10); r.raise_for_status()
+        return float(r.json()["price"]), "gold-api.com"
+    except Exception:
+        return None, None
+
+def gate_raw_last():
+    r = requests.get(f"{GATE}/tickers", params={"contract": GOLD_SYMBOL}, timeout=15); r.raise_for_status()
+    return float(r.json()[0]["last"])
+
+def update_offset(s):
+    """Actualiza s['offset'] (media móvil de la diferencia Gate - spot) solo con el mercado abierto."""
+    info = s.setdefault("offset_info", {})
+    if GOLD_API == "gate" and gold_open(now_utc()):
+        try:
+            ref, src = spot_ref(); g = gate_raw_last()
+            if ref and abs(g - ref) < 60:
+                sample = g - ref
+                prev = s.get("offset")
+                s["offset"] = sample if prev is None else 0.5 * prev + 0.5 * sample
+                info.update(ref=ref, src=src, gate=g, sample=round(sample, 2), at=now_utc().isoformat())
+        except Exception as ex:
+            log(f"offset: sin referencia ({ex!r})")
+    OFFSET["value"] = s.get("offset") or 0.0
+    # migración única: posiciones abiertas con precios de Gate sin corregir -> misma escala
+    if not s.get("offset_migrated") and OFFSET["value"]:
+        d = OFFSET["value"]
+        for st in s["accounts"].values():
+            st["units"] = [[q, e - d, w] for q, e, w in st["units"]]
+            if st.get("stop") is not None: st["stop"] -= d
+        s["offset_migrated"] = True
+        log(f"Posiciones abiertas pasadas a precio spot (corrección {d:+.2f} $)")
+
 def last_price():
     if GOLD_API == "gate":
         r = requests.get(f"{GATE}/tickers", params={"contract": GOLD_SYMBOL}, timeout=15); r.raise_for_status()
-        return float(r.json()[0]["last"])
+        return float(r.json()[0]["last"]) - (OFFSET["value"] or 0.0)
     r = requests.get(f"{BINANCE[GOLD_API]}/ticker/price", params={"symbol": GOLD_SYMBOL}, timeout=15); r.raise_for_status()
     return float(r.json()["price"])
 
@@ -342,6 +392,9 @@ def render(s):
     cards = []; rows = []; fx = s.get("fx") or 1.12
     tot = sum(st["equity"] for st in s["accounts"].values()); tot0 = CAPITAL_EUR * len(ACCOUNTS)
     off = int(madrid(now_utc()).utcoffset().total_seconds() // 3600)
+    oi = s.get("offset_info") or {}
+    price_src = (f"{GOLD_SYMBOL} de Gate.io corregido al spot ({oi.get('src', '—')}): diferencia {-(s.get('offset') or 0):+.2f} $"
+                 + (f" (medida {iso_madrid(oi['at'])})" if oi.get("at") else "")) if GOLD_API == "gate" else GOLD_SYMBOL
     sess_mad = f"{7 + off:02d}-{20 + off:02d} h en Madrid"
     for acc in ACCOUNTS:
         st = s["accounts"][acc["id"]]; ind = st.get("ind", {}); px = st.get("price")
@@ -411,7 +464,7 @@ details{{font-size:13px;margin-top:6px}} ul{{padding-left:18px;color:#aab4bf}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
-<div class="muted">Dinero ficticio · precio del oro: {GOLD_SYMBOL} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
+<div class="muted">Dinero ficticio · precio del oro: {price_src} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
 <div class="total">Total: <b>{tot:,.2f} €</b> <span class="{"up" if tot >= tot0 else "dn"}">({(tot / tot0 - 1) * 100:+.2f} %)</span> <span class="muted">de {tot0:,.0f} €</span></div></div>
 <div class="warn">Simulación con dinero ficticio. Cada estrategia tiene su propia cuenta de 1000 €. Lotes como en Vantage (mínimo 0,01 lote = 1 oz).
 Costes 0,20 $/oz por lado y swap de largos 6 %/año. {html.escape(note)}</div>
@@ -426,6 +479,7 @@ def main():
     log("Paper trader iniciado" + (" (una pasada)" if once else ""))
     while True:
         s["fx"] = eurusd(s.get("fx"))
+        update_offset(s)
         for acc in ACCOUNTS:
             try:
                 process(acc, s["accounts"][acc["id"]], s["fx"])
