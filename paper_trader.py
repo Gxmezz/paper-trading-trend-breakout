@@ -312,14 +312,14 @@ def render(s):
     rows.sort(reverse=True)
     trades_html = "".join(r for _, r in rows) or '<tr><td colspan="10" class="muted">Aún no hay operaciones cerradas</td></tr>'
     upd = now_utc()
-    DASH.write_text(f'''<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta http-equiv="refresh" content="60">
+    DASH.write_text(f'''<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
 <title>Paper trading · Trend Breakout</title>
 <style>
 body{{font-family:Segoe UI,system-ui,sans-serif;background:#0f1419;color:#d7dde4;margin:0;padding:24px}}
 h1{{margin:0 0 4px;font-size:22px}} h2{{margin:0;font-size:18px}} .muted,.sub{{color:#8b97a5;font-size:13px}}
 .top{{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:18px}}
 .total{{font-size:15px}} .total b{{font-size:22px}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:16px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(460px,100%),1fr));gap:16px}}
 .card{{background:#161c23;border:1px solid #243040;border-radius:10px;padding:16px}}
 .head{{display:flex;justify-content:space-between;align-items:center}}
 .badge{{font-size:12px;padding:3px 8px;border-radius:12px}} .badge.open{{background:#123d2c;color:#3fb68b}} .badge.closed{{background:#2a2f36;color:#8b97a5}}
@@ -330,6 +330,7 @@ h1{{margin:0 0 4px;font-size:22px}} h2{{margin:0;font-size:18px}} .muted,.sub{{c
 .up{{color:#3fb68b}} .dn{{color:#e5534b}} .chart{{width:100%;height:120px}} .base{{stroke:#3a4654;stroke-dasharray:4 4}}
 table{{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}} th,td{{padding:6px 8px;border-bottom:1px solid #243040;text-align:right}} th:first-child,td:first-child{{text-align:left}}
 details{{font-size:13px;margin-top:6px}} ul{{padding-left:18px;color:#aab4bf}}
+@media (max-width:600px){{body{{padding:12px}} .kpis{{grid-template-columns:repeat(2,1fr)}} table{{display:block;overflow-x:auto}}}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
 <div class="top"><div><h1>Paper trading · Trend Breakout (EMA + Donchian + ATR)</h1>
