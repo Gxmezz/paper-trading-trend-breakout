@@ -12,7 +12,8 @@ Realismo:
     del 4 % de la cuenta, la señal se descarta.
   - Costes 0.20 $/oz por lado (Raw ECN: medio spread + comisión 3 $/lote/lado + slippage).
     Swap de largos 6 %/año (miércoles x3), cortos 0. Apalancamiento máximo 1:50.
-  - Horario del oro: cerrado vie 21:00 -> dom 22:00 UTC y pausa diaria 21:00-22:00 UTC.
+  - Horario del oro (hora de Nueva York, se ajusta solo al horario de verano/invierno): cerrado de vie 17:00
+    a dom 18:00 y pausa diaria 17:00-18:00 (en Madrid, normalmente 23:00-00:00).
   - Precio del oro: perpetuo XAU_USDT de Gate.io (cotiza como el oro spot; accesible desde cualquier país).
   - Cada ejecución repite minuto a minuto lo ocurrido desde la anterior: entradas y salidas al open del minuto
     siguiente al cierre de la vela, stops con el mínimo/máximo de cada minuto. Resultado independiente de la
@@ -24,6 +25,7 @@ Uso:  python paper_trader.py          (bucle continuo, cada 20 s)
 """
 import json, math, os, sys, time, traceback, html, bisect
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import requests
 
@@ -52,10 +54,10 @@ ACCOUNTS = [
          desc="EMA 200 de H1 + ruptura Donchian 60 + stop ATR×3 con trailing · hasta 3 unidades · largos y cortos"),
     dict(id="gold_m15", name="Oro M15 · Pullback", tf="15m", fam="PB", htf="1h", ema=200, rsi=2, lo=20, hi=80,
          mult=2.0, shorts=False, sess=(7, 20), risk=0.01,
-         desc="Tendencia EMA 200 de H1 + compra con RSI(2) < 20, venta con RSI(2) > 80 · stop ATR×2 · entradas 07-20 UTC"),
+         desc="Tendencia EMA 200 de H1 + compra con RSI(2) < 20, venta con RSI(2) > 80 · stop ATR×2 · entradas 07-20 UTC ({SESS_MAD})"),
     dict(id="gold_m5", name="Oro M5 · Pullback", tf="5m", fam="PB", htf="1h", ema=200, rsi=3, lo=5, hi=80,
          mult=2.0, shorts=False, sess=(7, 20), risk=0.02,
-         desc="Tendencia EMA 200 de H1 + compra con RSI(3) < 5, venta con RSI(3) > 80 · stop ATR×2 · riesgo 2 % · entradas 07-20 UTC"),
+         desc="Tendencia EMA 200 de H1 + compra con RSI(3) < 5, venta con RSI(3) > 80 · stop ATR×2 · riesgo 2 % · entradas 07-20 UTC ({SESS_MAD})"),
 ]
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 GATE = "https://api.gateio.ws/api/v4/futures/usdt"
@@ -69,13 +71,25 @@ def log(msg):
     with open(LOG, "a", encoding="utf-8") as f: f.write(line + "\n")
 
 # ---------- horario ----------
+NY = ZoneInfo("America/New_York")
+MAD = ZoneInfo("Europe/Madrid")
+def madrid(t: datetime) -> datetime: return t.astimezone(MAD)
+def iso_madrid(s: str) -> str:
+    """'2026-11-09T20:02:00+00:00' -> '09/11 21:02' (hora de Madrid)"""
+    try: return madrid(datetime.fromisoformat(s)).strftime("%d/%m %H:%M")
+    except Exception: return s or ""
+
 def gold_open(t: datetime) -> bool:
-    wd, h = t.weekday(), t.hour
-    if wd == 5: return False
-    if wd == 4 and h >= 21: return False
-    if wd == 6 and h < 22: return False
-    if h == 21: return False
+    n = t.astimezone(NY); wd, h = n.weekday(), n.hour
+    if wd == 5: return False                    # sábado
+    if wd == 4 and h >= 17: return False        # viernes desde las 17:00 NY
+    if wd == 6 and h < 18: return False         # domingo hasta las 18:00 NY
+    if h == 17: return False                    # pausa diaria 17:00-18:00 NY
     return True
+
+def trading_day(t: datetime) -> str:
+    """Día de negociación: cambia en el rollover de las 17:00 NY (cuando se cobra el swap)."""
+    return (t.astimezone(NY) + timedelta(hours=7)).date().isoformat()
 
 # ---------- datos ----------
 def klines(interval, limit=1000, start=None):
@@ -157,7 +171,7 @@ def save_state(s):
     tmp = STATE.with_suffix(".tmp"); tmp.write_text(json.dumps(s, indent=1), encoding="utf-8"); tmp.replace(STATE)
 
 def event(st, msg):
-    st["events"].insert(0, f"{now_utc():%d/%m %H:%M} UTC · {msg}"); del st["events"][60:]
+    st["events"].insert(0, f"{madrid(now_utc()):%d/%m %H:%M} · {msg}"); del st["events"][60:]
 
 def unreal_usd(st, px): return sum(st["pos"] * q * (px - e) for q, e, _ in st["units"])
 def equity_eur(st, px, fx): return st["cash"] + (unreal_usd(st, px) / fx if px else 0.0)
@@ -279,9 +293,9 @@ def process(acc, st, fx):
             for tb in [x["t"] for x in bars if x["t"] > st["last_sig_bar"] and x["t"] + tfms <= b["t"]]:
                 on_bar_close(pos_of[tb], b["o"], bt.isoformat())
                 st["last_sig_bar"] = tb
-            day = (bt - timedelta(hours=22)).date().isoformat()
+            day = trading_day(bt)
             if st["units"] and st["last_swap_day"] and day != st["last_swap_day"] and st["pos"] == 1:
-                nights = 3 if datetime.fromisoformat(day).weekday() == 2 else 1
+                nights = 3 if datetime.fromisoformat(day).weekday() == 3 else 1   # rollover del miércoles
                 sw = sum(q for q, _, _ in st["units"]) * b["o"] * SWAP_LONG / 365 * nights / fx
                 st["cash"] -= sw; st["swaps_paid"] += sw
                 if st["trade_open"]: st["trade_open"]["swaps"] += sw
@@ -327,6 +341,8 @@ def fmt(v, d=2): return f"{v:,.{d}f}" if isinstance(v, (int, float)) else "—"
 def render(s):
     cards = []; rows = []; fx = s.get("fx") or 1.12
     tot = sum(st["equity"] for st in s["accounts"].values()); tot0 = CAPITAL_EUR * len(ACCOUNTS)
+    off = int(madrid(now_utc()).utcoffset().total_seconds() // 3600)
+    sess_mad = f"{7 + off:02d}-{20 + off:02d} h en Madrid"
     for acc in ACCOUNTS:
         st = s["accounts"][acc["id"]]; ind = st.get("ind", {}); px = st.get("price")
         pl = st["equity"] - CAPITAL_EUR
@@ -352,7 +368,7 @@ def render(s):
         cards.append(f'''
 <div class="card">
   <div class="head"><h2>{acc["name"]}</h2><span class="badge {"open" if st["status"] == "abierto" else "closed"}">{"● Abierto" if st["status"] == "abierto" else "○ Cerrado"}</span></div>
-  <div class="sub">{acc["desc"]}</div>
+  <div class="sub">{acc["desc"].replace("{SESS_MAD}", sess_mad)}</div>
   <div class="kpis">
     <div><span>Capital</span><b>{fmt(st["equity"])} €</b></div>
     <div><span>Resultado</span><b class="{"up" if pl >= 0 else "dn"}">{pl:+,.2f} € ({pl / CAPITAL_EUR * 100:+.2f} %)</b></div>
@@ -367,8 +383,8 @@ def render(s):
   <details><summary>Eventos</summary><ul>{"".join(f"<li>{html.escape(e)}</li>" for e in st["events"][:25])}</ul></details>
 </div>''')
         for x in st["trades"]:
-            rows.append((x["exit_time"], f'<tr><td>{acc["name"]}</td><td>{x["side"]}</td><td>{(x["entry_time"] or "")[:16].replace("T", " ")}</td>'
-                         f'<td>{x["exit_time"][:16].replace("T", " ")}</td><td>{x["qty"]:g}</td><td>{fmt(x["avg_entry"])}</td><td>{fmt(x["exit"])}</td>'
+            rows.append((x["exit_time"], f'<tr><td>{acc["name"]}</td><td>{x["side"]}</td><td>{iso_madrid(x["entry_time"])}</td>'
+                         f'<td>{iso_madrid(x["exit_time"])}</td><td>{x["qty"]:g}</td><td>{fmt(x["avg_entry"])}</td><td>{fmt(x["exit"])}</td>'
                          f'<td class="{"up" if x["pnl"] >= 0 else "dn"}">{x["pnl"]:+,.2f}</td><td>{x["R"]:+.2f}</td><td>{html.escape(x["reason"])}</td></tr>'))
     rows.sort(reverse=True)
     trades_html = "".join(r for _, r in rows) or '<tr><td colspan="10" class="muted">Aún no hay operaciones cerradas</td></tr>'
@@ -395,13 +411,13 @@ details{{font-size:13px;margin-top:6px}} ul{{padding-left:18px;color:#aab4bf}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
-<div class="muted">Dinero ficticio · precio del oro: {GOLD_SYMBOL} · EURUSD {fx:.4f} · actualizado {now_utc():%d/%m/%Y %H:%M} UTC · la página se recarga cada minuto</div></div>
+<div class="muted">Dinero ficticio · precio del oro: {GOLD_SYMBOL} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
 <div class="total">Total: <b>{tot:,.2f} €</b> <span class="{"up" if tot >= tot0 else "dn"}">({(tot / tot0 - 1) * 100:+.2f} %)</span> <span class="muted">de {tot0:,.0f} €</span></div></div>
 <div class="warn">Simulación con dinero ficticio. Cada estrategia tiene su propia cuenta de 1000 €. Lotes como en Vantage (mínimo 0,01 lote = 1 oz).
 Costes 0,20 $/oz por lado y swap de largos 6 %/año. {html.escape(note)}</div>
 <div class="grid">{"".join(cards)}</div>
 <h2 style="margin-top:22px">Operaciones cerradas</h2>
-<table><tr><th>Cuenta</th><th>Lado</th><th>Entrada</th><th>Salida</th><th>Oz</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{trades_html}</table>
+<table><tr><th>Cuenta</th><th>Lado</th><th>Entrada (Madrid)</th><th>Salida (Madrid)</th><th>Oz</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{trades_html}</table>
 </body></html>''', encoding="utf-8")
 
 def main():
