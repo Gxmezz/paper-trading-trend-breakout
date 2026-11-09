@@ -1,8 +1,8 @@
 # Paper trading · Oro (Vantage) · 1000 € por estrategia
 
 Simulación con **dinero ficticio** de estrategias para el oro (XAUUSD en Vantage), una por temporalidad,
-cada una con su propia cuenta de 1000 €. Se ejecuta sola en GitHub Actions cada ~10 minutos y publica el
-dashboard en GitHub Pages.
+cada una con su propia cuenta de 1000 €. Se ejecuta sola en GitHub Actions (el motor corre cada minuto) y publica el
+dashboard en GitHub Pages cada ~7 minutos.
 
 **Dashboard:** https://gxmezz.github.io/paper-trading-trend-breakout/
 
@@ -46,12 +46,15 @@ repitan. El paper trading es precisamente la prueba con datos que nadie ha visto
 - Precio: perpetuo XAU_USDT de Gate.io (cotiza como el oro spot y es accesible desde los servidores de GitHub).
 - Cada ejecución repite minuto a minuto lo ocurrido desde la anterior, así que los retrasos de GitHub no
   cambian el resultado. El motor reproduce exactamente el backtest (mismas operaciones y resultado).
-- El estado se guarda en la rama `state` (un solo commit que se sobrescribe).
+- Funcionamiento 24/7: cada ejecución del workflow corre el motor cada minuto durante ~5 h 40 min y, al terminar,
+  lanza la siguiente (no depende del cron de GitHub, que puede tardar horas; el cron queda como respaldo).
+- El dashboard y el estado se publican en la rama `gh-pages` (un solo commit que se sobrescribe).
 
 ## Uso
 
-- Ejecutar ahora: **Actions → Paper trading → Run workflow**.
-- Empezar de cero: borra la rama `state`.
+- Si la cadena se detiene: **Actions → Paper trading → Run workflow**.
+- Pararlo: **Actions → Paper trading → ··· → Disable workflow** y cancela la ejecución en curso.
+- Empezar de cero: borra la rama `gh-pages` y relanza el workflow.
 - En local: `pip install requests && python paper_trader.py` (bucle cada 20 s, dashboard en `dashboard.html`).
 
 `strategy/gold_vantage.pine` es el script de TradingView con estas estrategias (elige la temporalidad del gráfico y aplica la suya; úsalo en `VANTAGE:XAUUSD`). `strategy/` también contiene el optimizador, los backtests y el script anterior (`trend_breakout.pine`).
