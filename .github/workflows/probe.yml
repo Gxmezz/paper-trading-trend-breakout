@@ -1,9 +1,0 @@
-name: probe
-on: workflow_dispatch
-jobs:
-  p:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          curl -s -m 15 -w "\nHTTP %{http_code}\n" "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD" | head -c 300; echo
-          curl -s -m 15 -w "\nHTTP %{http_code}\n" "https://api.gold-api.com/price/XAU" | head -c 200; echo
