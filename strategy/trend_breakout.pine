@@ -1,0 +1,103 @@
+//@version=6
+// Trend Breakout (EMA + Donchian + ATR)  —  3 indicadores, reglas 100% objetivas
+//
+// 1) EMA            → filtro de tendencia: solo largos si cierre > EMA
+// 2) Donchian       → entrada: cierre por encima del máximo de las N velas previas
+// 3) ATR(14)        → stop inicial = k×ATR y trailing stop (chandelier) que solo avanza
+// Piramidación: añade otra unidad (mismo riesgo) en cada nueva ruptura, hasta N unidades.
+// Señal al cierre de vela, ejecución al open de la siguiente (sin repintado / sin look-ahead).
+//
+// PRESETS POR TEMPORALIDAD (validados fuera de muestra en oro, ver informe):
+//   H1  : EMA 200 · Donchian 40 · ATR×3   ← el más robusto en todos los periodos
+//   M30 : EMA 100 · Donchian 60 · ATR×3
+//   M15 : EMA 200 · Donchian 40 · ATR×5   (marginal: perdió en jul-oct 2026)
+//   D   : EMA 200 · Donchian 20 · ATR×3   (BTC: solo diario funciona)
+//   M1 / M5: SIN ventaja tras costes en ninguna combinación probada → no operar.
+//
+// COSTES (Propiedades → Comisión). Por defecto 0.012 % por lado = oro en Vantage Raw ECN
+//   (comisión 3 $/lado/lote + medio spread + slippage ≈ 0.25 $/oz, conservador). BTC: pon 0.10.
+// Swaps NO se simulan en TradingView: compruébalos en MT5 (Especificación del símbolo).
+strategy("Trend Breakout EMA+Donchian+ATR", overlay = true,
+     initial_capital = 10000, currency = currency.USD,
+     commission_type = strategy.commission.percent, commission_value = 0.012,
+     slippage = 0, pyramiding = 5, process_orders_on_close = false,
+     calc_on_every_tick = false, margin_long = 10, margin_short = 10)
+
+usePreset = input.bool(true, "Usar preset según temporalidad")
+emaIn    = input.int(200, "EMA tendencia (manual)", minval = 10)
+donIn    = input.int(20,  "Donchian velas (manual)", minval = 2)
+multIn   = input.float(3.0, "Stop = ATR × (manual)", step = 0.25)
+atrLen   = input.int(14,  "ATR longitud", minval = 1)
+riskPct  = input.float(1.0, "Riesgo por unidad (%)", step = 0.25) / 100
+maxLev   = input.float(10.0, "Apalancamiento máximo", step = 0.5)
+maxUnits = input.int(3, "Unidades máx. (piramidación, 1 = sin piramidar)", minval = 1, maxval = 5)
+useShort = input.bool(false, "Permitir cortos")
+sessOn   = input.bool(false, "Filtrar sesión (entradas solo en horario)")
+sessStr  = input.session("0700-2000", "Sesión de entradas (UTC)")
+flatEod  = input.bool(false, "Cerrar todo antes del rollover (evita swap)")
+rollH    = input.int(21, "Hora rollover (UTC)", minval = 0, maxval = 23)
+startY   = input.int(2000, "Año inicio backtest")
+
+tfm = timeframe.in_seconds() / 60
+[pEma, pDon, pMult] = switch
+    tfm == 60   => [200, 40, 3.0]
+    tfm == 30   => [100, 60, 3.0]
+    tfm == 15   => [200, 40, 5.0]
+    tfm >= 1440 => [200, 20, 3.0]
+    => [emaIn, donIn, multIn]
+emaLen  = usePreset ? pEma : emaIn
+donLen  = usePreset ? pDon : donIn
+atrMult = usePreset ? pMult : multIn
+
+ema   = ta.ema(close, emaLen)
+upper = ta.highest(high, donLen)[1]
+lower = ta.lowest(low, donLen)[1]
+atr   = ta.atr(atrLen)
+
+inSess = not sessOn or not na(time(timeframe.period, sessStr, "UTC"))
+isEod  = flatEod and timeframe.isintraday and hour(time, "UTC") < rollH and hour(time_close, "UTC") >= rollH
+canTrade = year >= startY and inSess and not isEod
+
+units    = strategy.opentrades
+longSig  = canTrade and strategy.position_size >= 0 and units < maxUnits and close > upper and close > ema
+shortSig = canTrade and useShort and strategy.position_size <= 0 and units < maxUnits and close < lower and close < ema
+
+// Tamaño por riesgo fijo
+stopDist = atrMult * atr
+equity   = strategy.equity
+exposure = math.abs(strategy.position_size) * close
+qty      = math.min(equity * riskPct / stopDist, math.max(0, equity * maxLev - exposure) / close)
+
+var float trail = na
+
+if longSig and qty > 0
+    trail := strategy.position_size > 0 ? math.max(trail, close - stopDist) : close - stopDist
+    strategy.entry("L", strategy.long, qty = qty)
+if shortSig and qty > 0
+    trail := strategy.position_size < 0 ? math.min(trail, close + stopDist) : close + stopDist
+    strategy.entry("S", strategy.short, qty = qty)
+
+// Trailing stop chandelier: solo se mueve a favor
+if strategy.position_size > 0 and not longSig
+    trail := math.max(trail, close - stopDist)
+if strategy.position_size < 0 and not shortSig
+    trail := math.min(trail, close + stopDist)
+
+if strategy.position_size > 0 or longSig
+    strategy.exit("XL", from_entry = "L", stop = trail)
+if strategy.position_size < 0 or shortSig
+    strategy.exit("XS", from_entry = "S", stop = trail)
+
+if isEod and strategy.position_size != 0
+    strategy.close_all(comment = "Rollover", immediately = true)
+
+plot(ema, "EMA", color.orange, 2)
+plot(upper, "Donchian sup", color.new(color.teal, 40))
+plot(lower, "Donchian inf", color.new(color.red, 40))
+plot(strategy.position_size != 0 or longSig or shortSig ? trail : na, "Trailing stop", color.fuchsia, 2, plot.style_linebr)
+
+var table info = table.new(position.top_right, 1, 1)
+if barstate.islast
+    warn = tfm < 15 and usePreset
+    txt = warn ? "⚠ M1/M5: sin ventaja tras costes en los tests" : "Preset: EMA " + str.tostring(emaLen) + " · Donchian " + str.tostring(donLen) + " · ATR×" + str.tostring(atrMult)
+    table.cell(info, 0, 0, txt, bgcolor = warn ? color.new(color.red, 20) : color.new(color.gray, 70), text_color = color.white)

@@ -1,0 +1,6 @@
+state.json
+dashboard.html
+*.log
+__pycache__/
+site/
+*.tmp

@@ -1,0 +1,71 @@
+name: Paper trading
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # cada 10 min (GitHub puede retrasar las ejecuciones programadas)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: paper-trading
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Cargar estado anterior (rama "state")
+        run: |
+          if git ls-remote --exit-code --heads origin state >/dev/null; then
+            git fetch --depth=1 origin state
+            git show origin/state:state.json > state.json
+            echo "Estado cargado: $(wc -c < state.json) bytes"
+          else
+            echo "Primera ejecución: estado nuevo"
+          fi
+
+      - name: Ejecutar paper trader
+        env:
+          PT_STATE: state.json
+          PT_DASH: site/index.html
+          PT_LOG: run.log
+          PT_GOLD_API: ${{ vars.PT_GOLD_API || 'fapi' }}
+          PT_NOTE: "Se actualiza automáticamente cada ~10 min con GitHub Actions (las ejecuciones programadas pueden retrasarse). Si la hora de actualización tiene más de 1 hora, revisa la pestaña Actions del repositorio."
+        run: |
+          mkdir -p site
+          python paper_trader.py --once
+          cp state.json site/state.json
+
+      - name: Guardar estado (rama "state", un solo commit)
+        run: |
+          tmp=$(mktemp -d)
+          cp state.json "$tmp/"
+          cd "$tmp"
+          git init -q -b state
+          git add state.json
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -qm "estado $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
