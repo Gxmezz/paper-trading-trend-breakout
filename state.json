@@ -1,0 +1,162 @@
+{
+ "version": 2,
+ "started": "2026-11-09T16:13:43.338288+00:00",
+ "accounts": {
+  "gold_h1": {
+   "cash": 1000.0,
+   "pos": 0,
+   "units": [],
+   "stop": null,
+   "last_1m": 1794240720000,
+   "last_sig_bar": 1794236400000,
+   "last_swap_day": null,
+   "price": 4133.98,
+   "equity": 1000.0,
+   "peak": 1000.0,
+   "max_dd": 0.0,
+   "trades": [],
+   "curve": [
+    [
+     1794240824050,
+     1000.0
+    ]
+   ],
+   "events": [
+    "09/11 16:13 UTC \u00b7 Arranque: cuenta de 1000 \u20ac lista. Se opera desde la pr\u00f3xima vela cerrada."
+   ],
+   "ind": {
+    "bar_time": "2026-11-09T15:00:00+00:00",
+    "close": 4128.0,
+    "trend_line": 4052.12,
+    "atr": 16.05,
+    "stop_dist": 32.1,
+    "trend": "alcista",
+    "don_hi": 4136.87,
+    "don_lo": 4091.86
+   },
+   "status": "abierto",
+   "swaps_paid": 0.0,
+   "costs_paid": 0.0,
+   "trade_open": null,
+   "pend_exit": false,
+   "skipped": 0
+  },
+  "gold_m30": {
+   "cash": 1000.0,
+   "pos": 0,
+   "units": [],
+   "stop": null,
+   "last_1m": 1794240720000,
+   "last_sig_bar": 1794238200000,
+   "last_swap_day": null,
+   "price": 4133.98,
+   "equity": 1000.0,
+   "peak": 1000.0,
+   "max_dd": 0.0,
+   "trades": [],
+   "curve": [
+    [
+     1794240825610,
+     1000.0
+    ]
+   ],
+   "events": [
+    "09/11 16:13 UTC \u00b7 Arranque: cuenta de 1000 \u20ac lista. Se opera desde la pr\u00f3xima vela cerrada."
+   ],
+   "ind": {
+    "bar_time": "2026-11-09T15:30:00+00:00",
+    "close": 4128.0,
+    "trend_line": 4051.36,
+    "atr": 10.06,
+    "stop_dist": 30.18,
+    "trend": "alcista",
+    "don_hi": 4140.6,
+    "don_lo": 4025.0
+   },
+   "status": "abierto",
+   "swaps_paid": 0.0,
+   "costs_paid": 0.0,
+   "trade_open": null,
+   "pend_exit": false,
+   "skipped": 0
+  },
+  "gold_m15": {
+   "cash": 1000.0,
+   "pos": 0,
+   "units": [],
+   "stop": null,
+   "last_1m": 1794240720000,
+   "last_sig_bar": 1794239100000,
+   "last_swap_day": null,
+   "price": 4134.2,
+   "equity": 1000.0,
+   "peak": 1000.0,
+   "max_dd": 0.0,
+   "trades": [],
+   "curve": [
+    [
+     1794240828058,
+     1000.0
+    ]
+   ],
+   "events": [
+    "09/11 16:13 UTC \u00b7 Arranque: cuenta de 1000 \u20ac lista. Se opera desde la pr\u00f3xima vela cerrada."
+   ],
+   "ind": {
+    "bar_time": "2026-11-09T15:45:00+00:00",
+    "close": 4128.0,
+    "trend_line": 4051.36,
+    "atr": 7.23,
+    "stop_dist": 14.45,
+    "trend": "alcista",
+    "rsi": 80.9
+   },
+   "status": "abierto",
+   "swaps_paid": 0.0,
+   "costs_paid": 0.0,
+   "trade_open": null,
+   "pend_exit": false,
+   "skipped": 0
+  },
+  "gold_m5": {
+   "cash": 1000.0,
+   "pos": 0,
+   "units": [],
+   "stop": null,
+   "last_1m": 1794240720000,
+   "last_sig_bar": 1794240300000,
+   "last_swap_day": null,
+   "price": 4133.61,
+   "equity": 1000.0,
+   "peak": 1000.0,
+   "max_dd": 0.0,
+   "trades": [],
+   "curve": [
+    [
+     1794240830397,
+     1000.0
+    ]
+   ],
+   "events": [
+    "09/11 16:13 UTC \u00b7 Arranque: cuenta de 1000 \u20ac lista. Se opera desde la pr\u00f3xima vela cerrada."
+   ],
+   "ind": {
+    "bar_time": "2026-11-09T16:05:00+00:00",
+    "close": 4132.01,
+    "trend_line": 4052.12,
+    "atr": 4.11,
+    "stop_dist": 8.22,
+    "trend": "alcista",
+    "rsi": 90.4
+   },
+   "status": "abierto",
+   "swaps_paid": 0.0,
+   "costs_paid": 0.0,
+   "trade_open": null,
+   "pend_exit": false,
+   "skipped": 0
+  }
+ },
+ "fx": 1.1212,
+ "updated": "2026-11-09T16:13:52.826890+00:00"
+}
