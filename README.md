@@ -54,6 +54,6 @@ repitan. El paper trading es precisamente la prueba con datos que nadie ha visto
 - Empezar de cero: borra la rama `state`.
 - En local: `pip install requests && python paper_trader.py` (bucle cada 20 s, dashboard en `dashboard.html`).
 
-`strategy/` contiene el script de TradingView (`trend_breakout.pine`), el optimizador y los backtests.
+`strategy/gold_vantage.pine` es el script de TradingView con estas estrategias (elige la temporalidad del gráfico y aplica la suya; úsalo en `VANTAGE:XAUUSD`). `strategy/` también contiene el optimizador, los backtests y el script anterior (`trend_breakout.pine`).
 
 > Simulación educativa. Resultados pasados no garantizan resultados futuros. No es asesoramiento financiero.

@@ -1,0 +1,89 @@
+//@version=6
+// Oro Vantage · cuenta de 1000 € · estrategia por temporalidad (máximo 3 indicadores cada una)
+//
+//   H1  · Ruptura          : EMA 200 + ruptura Donchian 10 + stop ATR×2 con trailing · largos y cortos · riesgo 1 %
+//   M30 · Ruptura filtro H1: EMA 200 de H1 + ruptura Donchian 60 + ATR×3 trailing · hasta 3 unidades · largos y cortos
+//   M15 · Pullback         : EMA 200 de H1 + RSI(2) < 20 compra, RSI(2) > 80 cierra · stop ATR×2 · entradas 07-20 UTC
+//   M5  · Pullback         : EMA 200 de H1 + RSI(3) < 5 compra, RSI(3) > 80 cierra · stop ATR×2 · riesgo 2 % · 07-20 UTC
+//   M1  : sin ventaja tras costes en las pruebas → no operar.
+//
+// Lotes como el XAUUSD estándar de Vantage: 0,01 lote = 1 oz (cantidad en onzas enteras). Si 1 oz arriesga
+// más del 3 % de la cuenta, la señal se descarta. Comisión 0,20 $/oz por lado (spread + comisión Raw ECN +
+// deslizamiento). Swaps NO simulados. Usa el gráfico VANTAGE:XAUUSD (u OANDA:XAUUSD).
+strategy("Oro Vantage 1000€ · por temporalidad", overlay = true,
+     initial_capital = 1000, currency = currency.EUR,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.20,
+     slippage = 0, pyramiding = 3, process_orders_on_close = false,
+     calc_on_every_tick = false, margin_long = 2, margin_short = 2)
+
+maxRisk = input.float(3.0, "Riesgo máx. si el lote mínimo lo supera (%)", step = 0.5) / 100
+riskMul = input.float(1.0, "Multiplicador de riesgo", step = 0.25)
+startY  = input.int(2020, "Año inicio backtest")
+
+tfm = timeframe.in_seconds() / 60
+// fam: 1 = ruptura (misma TF), 2 = ruptura con EMA de H1, 3 = pullback RSI con EMA de H1, 0 = no operar
+[fam, emaLen, donLen, rsiLen, rsiLo, rsiHi, atrMult, maxUnits, allowShort, s0, s1, riskPct] = switch
+    tfm == 60 => [1, 200, 10, 2, 20, 80, 2.0, 1, true, 0, 24, 0.01]
+    tfm == 30 => [2, 200, 60, 2, 20, 80, 3.0, 3, true, 0, 24, 0.01]
+    tfm == 15 => [3, 200, 0, 2, 20, 80, 2.0, 1, false, 7, 20, 0.01]
+    tfm == 5  => [3, 200, 0, 3, 5, 80, 2.0, 1, false, 7, 20, 0.02]
+    => [0, 200, 20, 2, 20, 80, 3.0, 1, false, 0, 24, 0.01]
+
+// Indicadores
+emaTf  = ta.ema(close, emaLen)
+emaH1  = request.security(syminfo.tickerid, "60", ta.ema(close, emaLen)[1], lookahead = barmerge.lookahead_on)
+trend  = fam == 1 ? emaTf : emaH1
+upper  = ta.highest(high, math.max(donLen, 1))[1]
+lower  = ta.lowest(low, math.max(donLen, 1))[1]
+r      = ta.rsi(close, rsiLen)
+atr    = ta.atr(14)
+dist   = atrMult * atr
+
+inSess = hour(time, "UTC") >= s0 and hour(time, "UTC") < s1
+ok     = fam > 0 and year >= startY and inSess and not na(trend)
+
+// Tamaño: onzas enteras, riesgo en EUR convertido a USD
+fx      = request.currency_rate("EUR", "USD")
+eqUsd   = strategy.equity * fx
+qtyRaw  = math.floor(eqUsd * riskPct * riskMul / dist)
+qty     = qtyRaw >= 1 ? qtyRaw : (dist <= eqUsd * maxRisk ? 1 : 0)
+expoOk  = (math.abs(strategy.position_size) + qty) * close <= eqUsd * 50
+
+var float stopPx = na
+units = strategy.opentrades
+
+if fam == 1 or fam == 2
+    longSig  = ok and close > upper and close > trend and strategy.position_size >= 0 and units < maxUnits
+    shortSig = ok and allowShort and close < lower and close < trend and strategy.position_size <= 0 and units < maxUnits
+    if strategy.position_size > 0
+        stopPx := math.max(stopPx, close - dist)
+    if strategy.position_size < 0
+        stopPx := math.min(stopPx, close + dist)
+    if longSig and qty > 0 and expoOk
+        stopPx := strategy.position_size > 0 ? math.max(stopPx, close - dist) : close - dist
+        strategy.entry("L", strategy.long, qty = qty)
+    if shortSig and qty > 0 and expoOk
+        stopPx := strategy.position_size < 0 ? math.min(stopPx, close + dist) : close + dist
+        strategy.entry("S", strategy.short, qty = qty)
+
+if fam == 3
+    if strategy.position_size > 0 and r > rsiHi
+        strategy.close("L", comment = "RSI salida")
+    longSig = ok and strategy.position_size == 0 and close > trend and r < rsiLo
+    if longSig and qty > 0 and expoOk
+        stopPx := close - dist
+        strategy.entry("L", strategy.long, qty = qty)
+
+if strategy.position_size > 0 or (fam > 0 and not na(stopPx))
+    strategy.exit("XL", from_entry = "L", stop = stopPx)
+    strategy.exit("XS", from_entry = "S", stop = stopPx)
+
+plot(trend, "Tendencia (EMA)", color.orange, 2)
+plot(fam == 1 or fam == 2 ? upper : na, "Donchian sup", color.new(color.teal, 40))
+plot(fam == 1 or fam == 2 ? lower : na, "Donchian inf", color.new(color.red, 40))
+plot(strategy.position_size != 0 ? stopPx : na, "Stop", color.fuchsia, 2, plot.style_linebr)
+
+var table info = table.new(position.top_right, 1, 1)
+if barstate.islast
+    txt = fam == 0 ? "⚠ Sin estrategia validada para esta temporalidad (usa M5, M15, M30 o H1)" : fam == 1 ? "H1 · Ruptura EMA200 + Donchian 10 + ATR×2" : fam == 2 ? "M30 · Ruptura Donchian 60 + EMA200 H1 + ATR×3 (3 unidades)" : tfm == 15 ? "M15 · Pullback RSI(2) 20/80 + EMA200 H1 + ATR×2" : "M5 · Pullback RSI(3) 5/80 + EMA200 H1 + ATR×2 (riesgo 2 %)"
+    table.cell(info, 0, 0, txt, bgcolor = fam == 0 ? color.new(color.red, 20) : color.new(color.gray, 70), text_color = color.white)
