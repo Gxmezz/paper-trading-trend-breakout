@@ -38,7 +38,7 @@ repitan. El paper trading es precisamente la prueba con datos que nadie ha visto
 
 - Cuenta en EUR: el resultado en USD se convierte al EURUSD del momento.
 - Lotes como el XAUUSD estándar de Vantage: 0,01 lote = 1 oz, así que las posiciones van en onzas enteras.
-  Con 1000 € el lote mínimo suele arriesgar más del 1 % en H1/M30; si 1 oz arriesga más del 3 % de la
+  Con 1000 € el lote mínimo suele arriesgar más del 1 % en H1/M30; si 1 oz arriesga más del 4 % de la
   cuenta, la señal se descarta.
 - Costes 0,20 $/oz por lado (Raw ECN: medio spread + comisión de 3 $/lote/lado + deslizamiento). Swap de largos
   6 %/año (triple el miércoles), cortos sin coste. Apalancamiento máximo 1:50.

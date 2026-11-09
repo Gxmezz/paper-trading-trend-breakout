@@ -8,7 +8,7 @@
 //   M1  : sin ventaja tras costes en las pruebas → no operar.
 //
 // Lotes como el XAUUSD estándar de Vantage: 0,01 lote = 1 oz (cantidad en onzas enteras). Si 1 oz arriesga
-// más del 3 % de la cuenta, la señal se descarta. Comisión 0,20 $/oz por lado (spread + comisión Raw ECN +
+// más del 4 % de la cuenta, la señal se descarta. Comisión 0,20 $/oz por lado (spread + comisión Raw ECN +
 // deslizamiento). Swaps NO simulados. Usa el gráfico VANTAGE:XAUUSD (u OANDA:XAUUSD).
 strategy("Oro Vantage 1000€ · por temporalidad", overlay = true,
      initial_capital = 1000, currency = currency.EUR,
@@ -16,7 +16,7 @@ strategy("Oro Vantage 1000€ · por temporalidad", overlay = true,
      slippage = 0, pyramiding = 3, process_orders_on_close = false,
      calc_on_every_tick = false, margin_long = 2, margin_short = 2)
 
-maxRisk = input.float(3.0, "Riesgo máx. si el lote mínimo lo supera (%)", step = 0.5) / 100
+maxRisk = input.float(4.0, "Riesgo máx. si el lote mínimo lo supera (%)", step = 0.5) / 100
 riskMul = input.float(1.0, "Multiplicador de riesgo", step = 0.25)
 startY  = input.int(2020, "Año inicio backtest")
 

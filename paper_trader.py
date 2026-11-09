@@ -9,7 +9,7 @@ Estrategias (máximo 3 indicadores cada una), optimizadas por temporalidad (ver 
 Realismo:
   - Cuenta en EUR (1000 €). Los resultados en USD se convierten al EURUSD del momento (Binance EURUSDT).
   - XAUUSD estándar de Vantage: 0.01 lote = 1 oz -> posiciones en onzas enteras. Si 1 oz arriesga más
-    del 3 % de la cuenta, la señal se descarta.
+    del 4 % de la cuenta, la señal se descarta.
   - Costes 0.20 $/oz por lado (Raw ECN: medio spread + comisión 3 $/lote/lado + slippage).
     Swap de largos 6 %/año (miércoles x3), cortos 0. Apalancamiento máximo 1:50.
   - Horario del oro: cerrado vie 21:00 -> dom 22:00 UTC y pausa diaria 21:00-22:00 UTC.
@@ -40,7 +40,7 @@ CAPITAL_EUR = 1000.0
 COST_SIDE = 0.20     # $/oz por lado
 SWAP_LONG = 0.06     # anual
 STEP = 1.0           # oz (0.01 lote)
-MAX_RISK = 0.03      # riesgo máximo aceptado con el lote mínimo
+MAX_RISK = 0.04      # riesgo máximo aceptado con el lote mínimo
 MAX_LEV = 50.0
 
 ACCOUNTS = [
