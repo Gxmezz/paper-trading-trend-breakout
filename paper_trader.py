@@ -1,7 +1,7 @@
 """
 Paper trading (dinero ficticio) de la estrategia Trend Breakout EMA + Donchian + ATR.
 
-- Precios en vivo: Binance (XAUUSDT perpetuo ≈ oro spot, BTCUSDT spot). Sin claves, sin órdenes reales.
+- Precios en vivo: oro = perpetuo XAU_USDT de Gate.io (≈ spot), BTC = BTCUSDT de Binance. Sin claves ni órdenes reales.
 - Respeta el horario del oro: cerrado vie 21:00 UTC -> dom 22:00 UTC y pausa diaria 21:00-22:00 UTC.
 - Costes: oro 0.25 $/oz por lado (Vantage Raw ECN estimado), BTC 0.10 % por lado. Swap por noche.
 - Lotes como Vantage: oro en onzas enteras (0.01 lote = 1 oz), BTC en pasos de 0.01.
@@ -21,8 +21,10 @@ HERE = Path(__file__).parent
 STATE = Path(os.environ.get("PT_STATE", HERE / "state.json"))
 DASH = Path(os.environ.get("PT_DASH", HERE / "dashboard.html"))
 LOG = Path(os.environ.get("PT_LOG", HERE / "paper_trader.log"))
-GOLD_API = os.environ.get("PT_GOLD_API", "fapi")      # fapi = XAUUSDT perpetuo; spot = PAXGUSDT
-GOLD_SYMBOL = "XAUUSDT" if GOLD_API == "fapi" else "PAXGUSDT"
+# Fuente del oro: gate = perpetuo XAU_USDT de Gate.io (precio spot, accesible desde cualquier país, por defecto)
+#                 fapi = XAUUSDT de Binance Futures (bloqueado desde EE. UU.) · spot = PAXGUSDT de Binance
+GOLD_API = os.environ.get("PT_GOLD_API", "gate")
+GOLD_SYMBOL = {"gate": "XAU_USDT", "fapi": "XAUUSDT", "spot": "PAXGUSDT"}[GOLD_API]
 POLL_SECONDS = 20
 CAPITAL = 10_000.0
 RISK = 0.01          # 1 % del capital por unidad
@@ -60,7 +62,25 @@ def gold_open(t: datetime) -> bool:
 def is_open(acc, t): return True if acc["hours"] == "24/7" else gold_open(t)
 
 # ---------- datos ----------
+GATE = "https://api.gateio.ws/api/v4/futures/usdt"
+GATE_TF = {"1m": 60, "30m": 1800, "1h": 3600, "1d": 86400}
+
+def gate_klines(acc, interval, limit=1000, start=None):
+    sec = GATE_TF[interval]
+    p = {"contract": acc["symbol"], "interval": interval}
+    if start is None:
+        p["limit"] = min(limit, 1999)
+    else:
+        p["from"] = int(start // 1000)
+        p["to"] = int(min(start // 1000 + (min(limit, 1999) - 1) * sec, time.time()))
+    r = requests.get(f"{GATE}/candlesticks", params=p, timeout=20)
+    r.raise_for_status()
+    return [dict(t=int(k["t"]) * 1000, o=float(k["o"]), h=float(k["h"]), l=float(k["l"]), c=float(k["c"]),
+                 ct=int(k["t"]) * 1000 + sec * 1000 - 1) for k in r.json()]
+
 def klines(acc, interval, limit=1000, start=None):
+    if acc["api"] == "gate":
+        return gate_klines(acc, interval, limit, start)
     p = {"symbol": acc["symbol"], "interval": interval, "limit": limit}
     if start is not None: p["startTime"] = int(start)
     r = requests.get(f"{BASE[acc['api']]}/klines", params=p, timeout=20)
@@ -75,6 +95,9 @@ def closed_bars(acc, interval, limit=1000, start=None):
     return bars
 
 def last_price(acc):
+    if acc["api"] == "gate":
+        r = requests.get(f"{GATE}/tickers", params={"contract": acc["symbol"]}, timeout=15)
+        r.raise_for_status(); return float(r.json()[0]["last"])
     r = requests.get(f"{BASE[acc['api']]}/ticker/price", params={"symbol": acc["symbol"]}, timeout=15)
     r.raise_for_status(); return float(r.json()["price"])
 
@@ -310,7 +333,7 @@ details{{font-size:13px;margin-top:6px}} ul{{padding-left:18px;color:#aab4bf}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
 <div class="top"><div><h1>Paper trading · Trend Breakout (EMA + Donchian + ATR)</h1>
-<div class="muted">Dinero ficticio · precios en vivo de Binance (XAUUSDT ≈ oro spot) · actualizado {upd:%d/%m/%Y %H:%M:%S} UTC · la página se recarga cada minuto</div></div>
+<div class="muted">Dinero ficticio · precios en vivo: oro {GOLD_SYMBOL} ({GOLD_API}), BTC Binance · actualizado {upd:%d/%m/%Y %H:%M:%S} UTC · la página se recarga cada minuto</div></div>
 <div class="total">Total cartera: <b>{tot_eq:,.2f} $</b> <span class="{"up" if tot_eq >= tot_start else "dn"}">({(tot_eq / tot_start - 1) * 100:+.2f} %)</span></div></div>
 <div class="warn">Simulación con dinero ficticio. Costes incluidos: oro 0,25 $/oz por lado, BTC 0,10 % por lado, swaps (oro 6 %/año, BTC 20 %/año). {os.environ.get("PT_NOTE", "Si esta hora tiene más de 2 minutos, el proceso no está corriendo.")}</div>
 <div class="grid">{"".join(cards)}</div>
