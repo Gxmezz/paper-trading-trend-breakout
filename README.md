@@ -34,6 +34,35 @@ en la selección (XAUUSDT jul–oct 2026). Rentabilidad mensual media en cada pe
 Son simulaciones de un periodo corto (≈2 años de datos de 1 minuto) con un oro muy volátil; no esperes que se
 repitan. El paper trading es precisamente la prueba con datos que nadie ha visto.
 
+### Comparación con la estrategia SMC (10/11/2026)
+
+`strategy/smc.py` mecaniza una estrategia Smart Money Concepts de un curso en vídeo:
+- **Sesgo**: estructura de H1 (BOS/CHoCH).
+- **Zonas**: Order Blocks válidos (fuerza + ruptura de estructura + FVG), FVG y zona OTE de Fibonacci.
+- **Entrada**: solo tras una reacción en la zona.
+- **Gestión**: stop tras el extremo + margen ATR, 3 parciales en R con break even, filtro de noticias.
+- **Riesgo**: 2 % por operación, −5 % diario, 4 pérdidas seguidas paran el día.
+
+`strategy/smc_opt.py` probó 5184 combinaciones por temporalidad con la misma metodología. `strategy/combine.py` compara las formas de juntarla con la estrategia actual. Rentabilidad mensual media y caída máxima:
+
+| Opción | Entreno XAU | Entreno PAXG | Prueba jul–nov 2026 |
+|---|---|---|---|
+| **B · Actual (4 cuentas)** | +8,0 % · −11 % | +6,0 % · −9 % | **+6,6 % · −5,5 %** |
+| A · SMC M15 sola | +2,9 % · −7 % | +4,1 % · −7 % | −1,2 % · −8 % |
+| A · SMC M5 sola | +3,9 % · −10 % | +4,6 % · −9 % | −1,8 % · −21 % |
+| C · SMC + EMA 200 H1 | ≈0 % | +5 % | −0,8 % |
+| D · Cartera actual + SMC (6 cuentas) | +6,6 % · −7 % | +5,5 % · −6,5 % | +4,1 % · −3,9 % |
+| E · Actual filtrada por estructura H1 | +8,0 % · −10 % | +5,7 % · −9 % | +2,9 % · −5,6 % |
+| B + filtro de noticias | +8,1 % · −10 % | +5,5 % · −9 % | +7,4 % · −6 % |
+
+Conclusiones:
+- La SMC es rentable en los dos periodos de entrenamiento, pero **pierde en el periodo de prueba**: no hay ventaja demostrada.
+- Juntarla con la estrategia actual reduce la caída máxima, pero también la rentabilidad fuera de muestra.
+- El filtro de noticias mejora H1 y M30 y empeora M15 y M5; la diferencia es pequeña.
+- Las 4 cuentas actuales siguen siendo rentables en backtest también con datos posteriores a su elección (10/10–09/11/2026: H1 +9 %, M30 +24 %, M15 +2 %, M5 +3,5 %).
+
+Para repetirlo: `python strategy/download_data.py`, luego `python strategy/smc_opt.py M5,M15,M30` y `python strategy/combine.py`.
+
 ## Condiciones simuladas
 
 - Cuenta en EUR: el resultado en USD se convierte al EURUSD del momento.
