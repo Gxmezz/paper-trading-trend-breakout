@@ -65,6 +65,11 @@ Conclusiones:
 
 Para repetirlo: `python strategy/download_data.py`, luego `python strategy/smc_opt.py M5,M15,M30` y `python strategy/combine.py`.
 
+**SMC v2 (10/11/2026).** `strategy/smc_opt2.py` añade barrida de liquidez, premium/descuento, killzones, TP en liquidez de H1, trailing, sesgo H4, alineación de estructura y filtros EMA 200 / Sniper (36 864 combinaciones por temporalidad):
+- Mejor puntuación de entrenamiento: 0,40 (M15) y 0,34 (M5), frente a 0,66–0,72 de la cartera actual.
+- Prueba jul–nov 2026: 37 de los 40 mejores pierden. El mejor gana +0,9 %/mes con una caída de −8 %; los que usan el filtro Sniper pierden entre −5 y −8 %/mes.
+- **Decisión**: la SMC sigue fuera del paper trading. El examen final (PAXG jul–dic 2024) queda sin usar para una futura estrategia candidata.
+
 ## Condiciones simuladas
 
 - Cuenta en EUR: el resultado en USD se convierte al EURUSD del momento.
