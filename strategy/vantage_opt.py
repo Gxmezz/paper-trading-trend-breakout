@@ -77,10 +77,12 @@ def signals(df, p):
     XL = (r > p["hi"]).values; XS = (r < 100 - p["hi"]).values
     return L.values, S.values, XL, XS
 
-def simulate(df, i0, p, cost_side=0.20, risk=0.01):
+def simulate(df, i0, p, cost_side=0.20, risk=0.01, curve=None, sig_filter=None):
+    """curve: lista donde se añade el capital (€) al cierre de cada vela. sig_filter(df, L, S) -> (L, S)."""
     o, h, l, c = (df[k].values for k in ("Open", "High", "Low", "Close"))
     a = atr(df).values
     L, S, XL, XS = signals(df, p)
+    if sig_filter is not None: L, S = sig_filter(df, L, S)
     hours = df.index.hour.values; day = (df.index - pd.Timedelta(hours=22)).normalize().asi8
     wdy = (df.index - pd.Timedelta(hours=22)).weekday.values
     trailing = p["fam"] in ("BO", "BOH"); units_max = p.get("units", 1)
@@ -124,6 +126,7 @@ def simulate(df, i0, p, cost_side=0.20, risk=0.01):
                 pend_exit = True
         cur = eq + sum(pos * q * (c[i] - e) for q, e in units)
         peak = max(peak, cur); mdd = min(mdd, cur / peak - 1)
+        if curve is not None: curve.append(cur / EURUSD)
         if cur < CAP * 0.1: break
         if i + 1 < n and s0 <= hours[i] < s1 and not pend_exit and len(units) < units_max:
             if L[i] and pos >= 0 and (pos == 0 or trailing): pend = 1
