@@ -411,6 +411,101 @@ def spark(curve, w=520, h=120):
     return (f'<svg viewBox="0 0 {w} {h}" class="chart"><line x1="0" x2="{w}" y1="{fy(CAPITAL_EUR):.1f}" y2="{fy(CAPITAL_EUR):.1f}" class="base"/>'
             f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="2"/></svg>')
 
+# Colores por cuenta (paleta categórica para fondo oscuro; el color sigue a la cuenta, no a su posición)
+SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9", "#e66767", "#008300"]
+def acc_color(i): return SERIES_COLORS[i % len(SERIES_COLORS)]
+
+def summary_table(s, fx):
+    rows = []
+    best = max(ACCOUNTS, key=lambda a: s["accounts"][a["id"]]["equity"])["id"]
+    for k, acc in enumerate(ACCOUNTS):
+        st = s["accounts"][acc["id"]]; px = st.get("price")
+        pl = st["equity"] - CAPITAL_EUR
+        tr = st["trades"]; wins = [x for x in tr if x["pnl"] > 0]
+        gp = sum(x["pnl"] for x in wins); gl = -sum(x["pnl"] for x in tr if x["pnl"] <= 0)
+        pf = f"{gp / gl:.2f}" if gl > 0 else ("∞" if gp > 0 else "—")
+        wr = f"{len(wins) / len(tr) * 100:.0f} %" if tr else "—"
+        qty = sum(q for q, _, _ in st["units"])
+        if qty:
+            un = unreal_usd(st, px) / fx if px else 0.0
+            pos = (f'<span class="tag {"long" if st["pos"] == 1 else "short"}">{"LARGO" if st["pos"] == 1 else "CORTO"} {qty:g} oz</span> '
+                   f'<span class="{"up" if un >= 0 else "dn"}">{un:+,.2f} €</span>')
+        else:
+            pos = '<span class="muted">—</span>'
+        lead = ' <span class="lead" title="Mayor capital ahora">▲ líder</span>' if acc["id"] == best and pl != 0 else ""
+        rows.append(f'<tr><td><span class="key" style="background:{acc_color(k)}"></span>{html.escape(acc["name"])}{lead}</td>'
+                    f'<td>{fmt(st["equity"])} €</td>'
+                    f'<td class="{"up" if pl > 0 else "dn" if pl < 0 else ""}">{pl:+,.2f} € <span class="muted">({pl / CAPITAL_EUR * 100:+.2f} %)</span></td>'
+                    f'<td>{len(tr)}</td><td>{wr}</td><td>{pf}</td><td>{st["max_dd"] * 100:.2f} %</td><td>{pos}</td></tr>')
+    return ('<div class="tablewrap"><table class="summary"><tr><th>Cuenta</th><th>Capital</th><th>Resultado</th><th>Operaciones</th>'
+            '<th>Acierto</th><th>PF</th><th>Caída máx.</th><th>Posición abierta</th></tr>' + "".join(rows) + "</table></div>")
+
+def equity_chart(s):
+    """Curvas de capital de todas las cuentas en un solo gráfico SVG con ejes, leyenda y tooltip."""
+    series = []
+    for k, acc in enumerate(ACCOUNTS):
+        cv = s["accounts"][acc["id"]]["curve"]
+        if cv: series.append(dict(name=acc["name"], color=acc_color(k), pts=cv))
+    if not series or max(len(x["pts"]) for x in series) < 2:
+        return '<div class="chartbox muted">Recogiendo datos para el gráfico…</div>'
+    W, H, L, R, T, B = 1000, 320, 72, 16, 14, 34
+    t0 = min(x["pts"][0][0] for x in series); t1 = max(x["pts"][-1][0] for x in series)
+    if t1 - t0 < 3_600_000: t1 = t0 + 3_600_000
+    ys = [p[1] for x in series for p in x["pts"]] + [CAPITAL_EUR]
+    lo, hi = min(ys), max(ys)
+    pad = max((hi - lo) * 0.08, 2.0); lo -= pad; hi += pad
+    raw = (hi - lo) / 5; mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    ylo = math.floor(lo / step) * step; yhi = math.ceil(hi / step) * step
+    X = lambda t: L + (t - t0) / (t1 - t0) * (W - L - R)
+    Y = lambda v: T + (yhi - v) / (yhi - ylo) * (H - T - B)
+    g = []
+    v = ylo
+    while v <= yhi + 1e-9:
+        g.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" class="grid"/>'
+                 f'<text x="{L - 8}" y="{Y(v) + 4:.1f}" class="ax" text-anchor="end">{v:,.0f} €</text>')
+        v += step
+    g.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(CAPITAL_EUR):.1f}" y2="{Y(CAPITAL_EUR):.1f}" class="base"/>')
+    span_h = (t1 - t0) / 3_600_000
+    tick_h = next((h for h in (1, 2, 3, 6, 12, 24, 48, 72, 168, 336, 720) if span_h / h <= 8), 720)
+    t = madrid(ms_to_dt(t0)).replace(minute=0, second=0, microsecond=0)
+    if tick_h >= 24: t = t.replace(hour=0)
+    while tick_h < 24 and t.hour % tick_h: t += timedelta(hours=1)
+    while t.timestamp() * 1000 <= t1:
+        ms = t.timestamp() * 1000
+        if ms >= t0:
+            lab = t.strftime("%d/%m") if tick_h >= 24 or t.hour == 0 else t.strftime("%H:%M")
+            g.append(f'<line x1="{X(ms):.1f}" x2="{X(ms):.1f}" y1="{H - B}" y2="{H - B + 4}" class="tick"/>'
+                     f'<text x="{X(ms):.1f}" y="{H - B + 18}" class="ax" text-anchor="middle">{lab}</text>')
+        t = t + timedelta(hours=tick_h)
+    lines = "".join(f'<polyline points="{" ".join(f"{X(a):.1f},{Y(b):.1f}" for a, b in x["pts"])}" fill="none" '
+                    f'stroke="{x["color"]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' for x in series)
+    legend = "".join(f'<span class="lg"><i style="background:{x["color"]}"></i>{html.escape(x["name"])}</span>' for x in series)
+    data = json.dumps(dict(t0=t0, t1=t1, ylo=ylo, yhi=yhi, W=W, H=H, L=L, R=R, T=T, B=B,
+                           s=[dict(n=x["name"], c=x["color"], p=x["pts"]) for x in series]))
+    js = JS_CHART.replace("__DATA__", data)
+    return (f'<div class="chartbox"><div class="legend">{legend}</div><div class="plot">'
+            f'<svg id="eqc" viewBox="0 0 {W} {H}" role="img" aria-label="Capital de cada cuenta en euros a lo largo del tiempo">'
+            f'{"".join(g)}{lines}<line id="xh" y1="{T}" y2="{H - B}" class="xh" style="display:none"/><g id="dots"></g></svg>'
+            f'<div id="tip" class="tip" style="display:none"></div></div></div><script>{js}</script>')
+
+JS_CHART = """(function(){
+const D=__DATA__;const svg=document.getElementById("eqc"),tip=document.getElementById("tip"),xh=document.getElementById("xh"),dots=document.getElementById("dots");
+const X=t=>D.L+(t-D.t0)/(D.t1-D.t0)*(D.W-D.L-D.R),Y=v=>D.T+(D.yhi-v)/(D.yhi-D.ylo)*(D.H-D.T-D.B);
+const at=(p,t)=>{if(t<p[0][0])return null;let lo=0,hi=p.length-1;while(lo<hi){const m=(lo+hi+1)>>1;if(p[m][0]<=t)lo=m;else hi=m-1;}return p[lo];};
+const nf=new Intl.NumberFormat("es-ES",{minimumFractionDigits:2,maximumFractionDigits:2});const ns="http://www.w3.org/2000/svg";
+function show(ev){const r=svg.getBoundingClientRect();const sx=(ev.clientX-r.left)/r.width*D.W;
+ const t=D.t0+(Math.min(Math.max(sx,D.L),D.W-D.R)-D.L)/(D.W-D.L-D.R)*(D.t1-D.t0);
+ xh.setAttribute("x1",X(t));xh.setAttribute("x2",X(t));xh.style.display="";dots.replaceChildren();tip.replaceChildren();
+ const h=document.createElement("div");h.className="th";h.textContent=new Date(t).toLocaleString("es-ES",{timeZone:"Europe/Madrid",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});tip.appendChild(h);
+ const rows=D.s.map(s=>{const q=at(s.p,t);return q?{s:s,v:q[1]}:null;}).filter(Boolean).sort((a,b)=>b.v-a.v);
+ for(const o of rows){const c=document.createElementNS(ns,"circle");c.setAttribute("cx",X(t));c.setAttribute("cy",Y(o.v));c.setAttribute("r",4);c.setAttribute("fill",o.s.c);c.setAttribute("stroke","#161c23");c.setAttribute("stroke-width",2);dots.appendChild(c);
+  const d=document.createElement("div");d.className="tr";const k=document.createElement("i");k.style.background=o.s.c;const b=document.createElement("b");b.textContent=nf.format(o.v)+" €";const n=document.createElement("span");n.textContent=o.s.n;d.append(k,b,n);tip.appendChild(d);}
+ tip.style.display="";const px=X(t)/D.W*r.width;tip.style.left=(px>r.width*0.55?px-tip.offsetWidth-12:px+12)+"px";}
+function hide(){xh.style.display="none";tip.style.display="none";dots.replaceChildren();}
+svg.addEventListener("pointermove",show);svg.addEventListener("pointerleave",hide);
+})();"""
+
 def fmt(v, d=2): return f"{v:,.{d}f}" if isinstance(v, (int, float)) else "—"
 
 def render(s):
@@ -486,6 +581,17 @@ h1{{margin:0 0 4px;font-size:22px}} h2{{margin:0;font-size:17px}} .muted,.sub{{c
 table{{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}} th,td{{padding:6px 8px;border-bottom:1px solid #243040;text-align:right}} th:first-child,td:first-child{{text-align:left}}
 details{{font-size:13px;margin-top:6px}} ul{{padding-left:18px;color:#aab4bf}}
 @media (max-width:600px){{body{{padding:12px}} .kpis{{grid-template-columns:repeat(2,1fr)}} table{{display:block;overflow-x:auto}}}}
+.tablewrap{{overflow-x:auto;margin-bottom:6px}} table.summary{{margin-top:8px;background:#161c23;border:1px solid #243040;border-radius:10px;border-collapse:separate;border-spacing:0}}
+table.summary th{{color:#8b97a5;font-weight:600;font-size:12px}} table.summary td,table.summary th{{white-space:nowrap}} table.summary tr:last-child td{{border-bottom:none}}
+.key{{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:8px}}
+.tag{{font-size:12px;padding:2px 6px;border-radius:6px}} .tag.long{{background:#123d2c;color:#3fb68b}} .tag.short{{background:#3d1a1a;color:#e5534b}}
+.lead{{font-size:11px;color:#8b97a5;margin-left:6px}}
+.chartbox{{background:#161c23;border:1px solid #243040;border-radius:10px;padding:12px 14px;margin-top:8px}}
+.legend{{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:#d7dde4;margin-bottom:6px}} .lg i,.tip i{{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}}
+.plot{{position:relative}} #eqc{{width:100%;height:auto;display:block;touch-action:none}}
+#eqc .grid{{stroke:#243040;stroke-width:1}} #eqc .base{{stroke:#5b6876;stroke-dasharray:4 4}} #eqc .tick{{stroke:#3a4654}} #eqc .ax{{fill:#8b97a5;font-size:12px}} #eqc .xh{{stroke:#8b97a5;stroke-width:1}}
+.tip{{position:absolute;top:8px;background:#0f1419;border:1px solid #3a4654;border-radius:8px;padding:8px 10px;font-size:12px;pointer-events:none;min-width:220px}}
+.tip .th{{color:#8b97a5;margin-bottom:4px}} .tip .tr{{display:flex;align-items:center;gap:6px;margin:2px 0}} .tip .tr b{{min-width:80px;text-align:right}} .tip .tr span{{color:#aab4bf}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
@@ -493,6 +599,11 @@ details{{font-size:13px;margin-top:6px}} ul{{padding-left:18px;color:#aab4bf}}
 <div class="total">Total: <b>{tot:,.2f} €</b> <span class="{"up" if tot >= tot0 else "dn"}">({(tot / tot0 - 1) * 100:+.2f} %)</span> <span class="muted">de {tot0:,.0f} €</span></div></div>
 <div class="warn">Simulación con dinero ficticio. Cada estrategia tiene su propia cuenta de 1000 €. Lotes como en Vantage (mínimo 0,01 lote = 1 oz).
 Costes 0,20 $/oz por lado y swap de largos 6 %/año. {html.escape(note)}</div>
+<h2>Comparativa</h2>
+{summary_table(s, fx)}
+<h2 style="margin-top:22px">Capital de cada cuenta</h2>
+{equity_chart(s)}
+<h2 style="margin-top:22px">Detalle por cuenta</h2>
 <div class="grid">{"".join(cards)}</div>
 <h2 style="margin-top:22px">Operaciones cerradas</h2>
 <table><tr><th>Cuenta</th><th>Lado</th><th>Entrada (Madrid)</th><th>Salida (Madrid)</th><th>Oz</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{trades_html}</table>
