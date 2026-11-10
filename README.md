@@ -11,7 +11,7 @@ dashboard en GitHub Pages cada ~7 minutos.
 | Cuenta | Familia | Reglas | Riesgo |
 |---|---|---|---|
 | Oro H1 | Ruptura | EMA 200 + ruptura Donchian 10 + stop ATR×2 con trailing · largos y cortos | 1 % |
-| Oro M30 | Ruptura con filtro H1 | EMA 200 de H1 + ruptura Donchian 60 + ATR×3 trailing · hasta 3 unidades · largos y cortos | 1 %/unidad |
+| Oro M30 | Ruptura con filtro H1 | EMA 200 de H1 + ruptura Donchian 60 + ATR×3 trailing · hasta 3 unidades · largos y cortos · sin entradas en noticias de EE. UU. (08:00–08:45 NY y FOMC 13:30–15:15 NY) | 1 %/unidad |
 | Oro M15 | Pullback | EMA 200 de H1 (tendencia) + RSI(2) < 20 para comprar, sale con RSI(2) > 80 · stop ATR×2 · entradas 07–20 UTC | 1 % |
 | Oro M5 | Pullback | EMA 200 de H1 + RSI(3) < 5 para comprar, sale con RSI(3) > 80 · stop ATR×2 · entradas 07–20 UTC | 2 % |
 
@@ -58,7 +58,8 @@ repitan. El paper trading es precisamente la prueba con datos que nadie ha visto
 Conclusiones:
 - La SMC es rentable en los dos periodos de entrenamiento, pero **pierde en el periodo de prueba**: no hay ventaja demostrada.
 - Juntarla con la estrategia actual reduce la caída máxima, pero también la rentabilidad fuera de muestra.
-- El filtro de noticias mejora H1 y M30 y empeora M15 y M5; la diferencia es pequeña.
+- Filtro de noticias: con el mismo criterio de selección (el peor de los dos periodos de entrenamiento) solo mejora **M30**: puntuación 0,49 → 0,59. En la prueba pasa de +5,8 % a +9,5 %/mes con la misma caída. En H1, M15 y M5 empeora el peor periodo de entrenamiento, así que no se aplica.
+- **Decisión**: se mantienen las 4 cuentas actuales, M30 con filtro de noticias. La SMC no entra en el paper trading.
 - Las 4 cuentas actuales siguen siendo rentables en backtest también con datos posteriores a su elección (10/10–09/11/2026: H1 +9 %, M30 +24 %, M15 +2 %, M5 +3,5 %).
 
 Para repetirlo: `python strategy/download_data.py`, luego `python strategy/smc_opt.py M5,M15,M30` y `python strategy/combine.py`.

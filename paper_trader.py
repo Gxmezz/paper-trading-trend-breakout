@@ -50,8 +50,8 @@ ACCOUNTS = [
          shorts=True, sess=(0, 24), risk=0.01,
          desc="EMA 200 + ruptura Donchian 10 + stop ATR×2 con trailing · largos y cortos"),
     dict(id="gold_m30", name="Oro M30 · Ruptura con filtro H1", tf="30m", fam="BOH", htf="1h", ema=200, don=60,
-         mult=3.0, units=3, shorts=True, sess=(0, 24), risk=0.01,
-         desc="EMA 200 de H1 + ruptura Donchian 60 + stop ATR×3 con trailing · hasta 3 unidades · largos y cortos"),
+         mult=3.0, units=3, shorts=True, sess=(0, 24), risk=0.01, news=True,
+         desc="EMA 200 de H1 + ruptura Donchian 60 + stop ATR×3 con trailing · hasta 3 unidades · largos y cortos · sin entradas en noticias de EE. UU."),
     dict(id="gold_m15", name="Oro M15 · Pullback", tf="15m", fam="PB", htf="1h", ema=200, rsi=2, lo=20, hi=80,
          mult=2.0, shorts=False, sess=(7, 20), risk=0.01,
          desc="Tendencia EMA 200 de H1 + compra con RSI(2) < 20, venta con RSI(2) > 80 · stop ATR×2 · entradas 07-20 UTC ({SESS_MAD})"),
@@ -78,6 +78,15 @@ def iso_madrid(s: str) -> str:
     """'2026-11-09T20:02:00+00:00' -> '09/11 21:02' (hora de Madrid)"""
     try: return madrid(datetime.fromisoformat(s)).strftime("%d/%m %H:%M")
     except Exception: return s or ""
+
+# Filtro de noticias (solo cuentas con news=True): sin entradas en velas que empiezan de 08:00 a 08:45 NY
+# (datos de EE. UU. a las 08:30) ni, en días de FOMC, de 13:30 a 15:15 NY. Igual que strategy/smc.news_masks.
+FOMC = {"2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17", "2026-07-29", "2026-09-16", "2026-10-28",
+        "2026-12-09"}   # añadir las fechas de 2027 cuando la Fed publique el calendario
+def news_block(bar_ms: int) -> bool:
+    ny = ms_to_dt(bar_ms).astimezone(NY); m = ny.hour * 60 + ny.minute
+    if ny.weekday() < 5 and 8 * 60 <= m < 8 * 60 + 45: return True
+    return ny.strftime("%Y-%m-%d") in FOMC and 13 * 60 + 30 <= m < 15 * 60 + 15
 
 def gold_open(t: datetime) -> bool:
     n = t.astimezone(NY); wd, h = n.weekday(), n.hour
@@ -318,6 +327,7 @@ def process(acc, st, fx):
                 ns = b["c"] - st["pos"] * dist
                 st["stop"] = max(st["stop"], ns) if st["pos"] == 1 else min(st["stop"], ns)
             if not in_sess or len(st["units"]) >= acc["units"]: return
+            if acc.get("news") and news_block(b["t"]): return
             if b["c"] > ind["don_hi"] and b["c"] > T[i] and st["pos"] >= 0:
                 open_unit(acc, st, 1, fill_px, dist, fill_time, fx)
             elif acc["shorts"] and b["c"] < ind["don_lo"] and b["c"] < T[i] and st["pos"] <= 0:
