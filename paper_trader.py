@@ -217,8 +217,9 @@ def new_account_state():
 
 def load_state():
     s = None
-    if STATE.exists() and "--reset" not in sys.argv:
-        s = json.loads(STATE.read_text(encoding="utf-8"))
+    raw = STATE.read_text(encoding="utf-8").strip() if STATE.exists() else ""
+    if raw and "--reset" not in sys.argv:
+        s = json.loads(raw)
         if s.get("version") != VERSION:
             log("Estado de una versión anterior: se empieza de cero"); s = None
     if s is None:
