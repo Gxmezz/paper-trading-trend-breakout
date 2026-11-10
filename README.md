@@ -12,6 +12,7 @@ dashboard en GitHub Pages cada ~7 minutos.
 |---|---|---|---|
 | Oro H1 | Ruptura | EMA 200 + ruptura Donchian 10 + stop ATR×2 con trailing · largos y cortos | 1 % |
 | Oro M30 | Ruptura con filtro H1 | EMA 200 de H1 + ruptura Donchian 60 + ATR×3 trailing · hasta 3 unidades · largos y cortos · sin entradas en noticias de EE. UU. (08:00–08:45 NY y FOMC 13:30–15:15 NY) | 1 %/unidad |
+| Oro M30 + Sniper (prueba) | Igual que Oro M30 | + solo a favor de SMA 9 > SMA 21 en H1 (indicador QNA Sniper de TradingView). En backtest mejora la prueba (+16,6 %/mes, −12 %), pero empeora PAXG; se corre aparte para comprobarlo en vivo (`strategy/sniper.py`) | 1 %/unidad |
 | Oro M15 | Pullback | EMA 200 de H1 (tendencia) + RSI(2) < 20 para comprar, sale con RSI(2) > 80 · stop ATR×2 · entradas 07–20 UTC | 1 % |
 | Oro M5 | Pullback | EMA 200 de H1 + RSI(3) < 5 para comprar, sale con RSI(3) > 80 · stop ATR×2 · entradas 07–20 UTC | 2 % |
 

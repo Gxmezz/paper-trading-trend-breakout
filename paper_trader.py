@@ -52,6 +52,9 @@ ACCOUNTS = [
     dict(id="gold_m30", name="Oro M30 · Ruptura con filtro H1", tf="30m", fam="BOH", htf="1h", ema=200, don=60,
          mult=3.0, units=3, shorts=True, sess=(0, 24), risk=0.01, news=True,
          desc="EMA 200 de H1 + ruptura Donchian 60 + stop ATR×3 con trailing · hasta 3 unidades · largos y cortos · sin entradas en noticias de EE. UU."),
+    dict(id="gold_m30_sniper", name="Oro M30 · Ruptura + filtro Sniper (prueba)", tf="30m", fam="BOH", htf="1h", ema=200,
+         don=60, mult=3.0, units=3, shorts=True, sess=(0, 24), risk=0.01, news=True, sniper=True,
+         desc="Como Oro M30 + solo a favor de SMA 9 > SMA 21 en H1 (indicador QNA Sniper) · cuenta experimental"),
     dict(id="gold_m15", name="Oro M15 · Pullback", tf="15m", fam="PB", htf="1h", ema=200, rsi=2, lo=20, hi=80,
          mult=2.0, shorts=False, sess=(7, 20), risk=0.01,
          desc="Tendencia EMA 200 de H1 + compra con RSI(2) < 20, venta con RSI(2) > 80 · stop ATR×2 · entradas 07-20 UTC ({SESS_MAD})"),
@@ -288,7 +291,17 @@ def build_indicators(acc, bars, htf_bars):
             j = bisect.bisect_right(hclose, b["t"]) - 1
             T.append(hE[j] if j >= 0 else float("nan"))
     R = rsi(closes, acc["rsi"]) if acc["fam"] == "PB" else None
-    return T, A, R
+    SN = None
+    if acc.get("sniper"):   # tendencia SMA 9 / SMA 21 de H1 (solo velas cerradas), como strategy/sniper.py
+        hc = [b["c"] for b in htf_bars]
+        def sma(n, k): return sum(hc[k - n + 1:k + 1]) / n if k >= n - 1 else float("nan")
+        sig = [(1 if sma(9, k) > sma(21, k) else -1 if sma(9, k) < sma(21, k) else 0) if k >= 20 else 0 for k in range(len(hc))]
+        hms = TF_MS[acc["htf"]]; hclose = [b["t"] + hms for b in htf_bars]
+        SN = []
+        for b in bars:
+            j = bisect.bisect_right(hclose, b["t"]) - 1
+            SN.append(sig[j] if j >= 0 else 0)
+    return T, A, R, SN
 
 def process(acc, st, fx):
     t = now_utc(); nowms = time.time() * 1000
@@ -298,7 +311,7 @@ def process(acc, st, fx):
     htf_bars = closed_bars(acc["htf"], 1000) if acc["fam"] != "BO" and acc.get("htf") not in (None, "same") else []
     need = (acc["ema"] if acc["fam"] == "BO" or acc.get("htf") == "same" else 30) + acc.get("don", 0) + 20
     if len(bars) < need: return
-    T, A, R = build_indicators(acc, bars, htf_bars)
+    T, A, R, SN = build_indicators(acc, bars, htf_bars)
     pos_of = {b["t"]: i for i, b in enumerate(bars)}
 
     def snapshot(i):
@@ -329,9 +342,10 @@ def process(acc, st, fx):
                 st["stop"] = max(st["stop"], ns) if st["pos"] == 1 else min(st["stop"], ns)
             if not in_sess or len(st["units"]) >= acc["units"]: return
             if acc.get("news") and news_block(b["t"]): return
-            if b["c"] > ind["don_hi"] and b["c"] > T[i] and st["pos"] >= 0:
+            if SN is not None and SN[i] == 0: return
+            if b["c"] > ind["don_hi"] and b["c"] > T[i] and st["pos"] >= 0 and (SN is None or SN[i] > 0):
                 open_unit(acc, st, 1, fill_px, dist, fill_time, fx)
-            elif acc["shorts"] and b["c"] < ind["don_lo"] and b["c"] < T[i] and st["pos"] <= 0:
+            elif acc["shorts"] and b["c"] < ind["don_lo"] and b["c"] < T[i] and st["pos"] <= 0 and (SN is None or SN[i] < 0):
                 open_unit(acc, st, -1, fill_px, dist, fill_time, fx)
         else:  # PB
             if st["pos"] == 1 and R[i] > acc["hi"]:
