@@ -186,7 +186,9 @@ def liq_target(sw, i, px, d, look=12):
 
 
 def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, daily_max=0.05, max_losses=4,
-             curve=None, trades_out=None):
+             curve=None, trades_out=None, state_out=None):
+    """state_out (dict opcional): al terminar recibe la posición abierta (pos, entry, stop, parts, be, t_open, risk_usd)
+    y el capital (eq, cur) para la cuenta en vivo del paper trading. No cambia los resultados."""
     pre = pre or prepare(df, p)
     o, h, l, c, a = pre["o"], pre["h"], pre["l"], pre["c"], pre["a"]
     bias, ema_ok, block, flat = pre["bias"], pre["ema"], pre["block"], pre["flat"]
@@ -204,7 +206,7 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
     pos = 0; parts = []; stop = 0.0; entry = 0.0; be_done = False; trade_pnl = 0.0; risk_usd = 0.0; t_open = None
     pend = None
     day_start = eq; day_losses = 0; cur_day = None
-    ntr = 0; gp = gl = 0.0; skipped = 0; wins = 0
+    ntr = 0; gp = gl = 0.0; skipped = 0; wins = 0; q_open = 0.0
     N = len(c)
 
     def close_all(px, i, reason):
@@ -217,7 +219,8 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
         else: gl += -trade_pnl; day_losses += 1
         if trades_out is not None:
             trades_out.append(dict(t_in=df.index[t_open], t_out=df.index[i], side=pos, entry=entry,
-                                   pnl_eur=trade_pnl / EURUSD, R=trade_pnl / risk_usd if risk_usd else 0, reason=reason))
+                                   pnl_eur=trade_pnl / EURUSD, R=trade_pnl / risk_usd if risk_usd else 0, reason=reason,
+                                   qty=float(q_open), exit=float(px)))
         pos = 0; parts = []; trade_pnl = 0.0
 
     for i in range(max(i0, 1), N):
@@ -248,7 +251,7 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
                     for k, ti in enumerate(sel):
                         qq = base + (1 if k < rest else 0)
                         parts.append([qq, px + d * tps[ti] * dist])
-                    pos = d; entry = px; stop = sl_px; be_done = False; risk_usd = q * dist; t_open = i
+                    pos = d; entry = px; stop = sl_px; be_done = False; risk_usd = q * dist; t_open = i; q_open = q
                 else:
                     skipped += 1
         # --- gestión de la posición
@@ -333,6 +336,10 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
                 pend = (d, sl_px)
             # la zona se consume tanto si se entra como si no
         active = alive
+    if state_out is not None:
+        state_out.update(pos=int(pos), entry=float(entry), stop=float(stop), parts=[[float(q), float(t)] for q, t in parts],
+                         be=bool(be_done), t_open=(df.index[t_open] if pos and t_open is not None else None),
+                         risk_usd=float(risk_usd), eq=float(eq), cur=float(cur), pending=pend is not None)
     days = (df.index[-1] - df.index[i0]).days or 1
     ret = cur / CAP - 1
     return dict(trades=ntr, win=round(wins / ntr * 100) if ntr else 0,

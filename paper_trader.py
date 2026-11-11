@@ -58,9 +58,13 @@ ACCOUNTS = [
     dict(id="gold_m15", name="Oro M15 · Pullback", tf="15m", fam="PB", htf="1h", ema=200, rsi=2, lo=20, hi=80,
          mult=2.0, shorts=False, sess=(7, 20), risk=0.01,
          desc="Tendencia EMA 200 de H1 + compra con RSI(2) < 20, venta con RSI(2) > 80 · stop ATR×2 · entradas 07-20 UTC ({SESS_MAD})"),
-    dict(id="gold_m5", name="Oro M5 · Pullback", tf="5m", fam="PB", htf="1h", ema=200, rsi=3, lo=5, hi=80,
-         mult=2.0, shorts=False, sess=(7, 20), risk=0.02,
-         desc="Tendencia EMA 200 de H1 + compra con RSI(3) < 5, venta con RSI(3) > 80 · stop ATR×2 · riesgo 2 % · entradas 07-20 UTC ({SESS_MAD})"),
+    dict(id="gold_smc_mec", name="Oro M15 · SMC mecánica (control)", tf="15m", fam="SMC", risk=0.02,
+         smc=dict(n=3, nh=3, imp=1.5, zone="ob", sweep=0, bias="4h", ltf_align=False, filt="ema", conf="close",
+                  conf_win=4, age=96, sl=0.2, pd=False, sess="kz", exit="R234", news="block", tp=(2, 3, 4)),
+         desc="SMC del curso, mecánica (strategy/smc.py v2, la mejor de entrenamiento): sesgo de estructura H4 + EMA 200 H1 · "
+              "Order Block con FVG tras ruptura de estructura · entrada al confirmar con cierre · stop tras el OB + 0,2 ATR · "
+              "3 parciales a 2R/3R/4R con break even · killzones Londres y NY · sin entradas en noticias · riesgo 2 %, "
+              "−5 % diario, 4 pérdidas paran el día. Cuenta de control para el futuro equipo de agentes."),
 ]
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 GATE = "https://api.gateio.ws/api/v4/futures/usdt"
@@ -227,6 +231,9 @@ def load_state():
             log("Estado de una versión anterior: se empieza de cero"); s = None
     if s is None:
         s = dict(version=VERSION, started=now_utc().isoformat(), accounts={}, fx=None)
+    for k in [k for k in s["accounts"] if k not in {a["id"] for a in ACCOUNTS}]:   # cuentas retiradas: se archivan
+        s.setdefault("archived", {})[k] = dict(s["accounts"].pop(k), archived_at=now_utc().isoformat())
+        log(f"Cuenta {k} retirada y archivada en el estado")
     s["accounts"] = {a["id"]: s["accounts"].get(a["id"]) or new_account_state() for a in ACCOUNTS}
     return s
 
@@ -304,6 +311,7 @@ def build_indicators(acc, bars, htf_bars):
     return T, A, R, SN
 
 def process(acc, st, fx):
+    if acc["fam"] == "SMC": return process_smc(acc, st, fx)
     t = now_utc(); nowms = time.time() * 1000
     st["status"] = "abierto" if gold_open(t) else "cerrado"
     tfms = TF_MS[acc["tf"]]
@@ -396,6 +404,80 @@ def process(acc, st, fx):
         if not st["curve"] or nowms - st["curve"][-1][0] >= 5 * 60_000:
             st["curve"].append([int(nowms), round(st["equity"], 2)])
             if len(st["curve"]) > 6000: st["curve"] = st["curve"][::2]
+
+# ---------- cuenta SMC mecánica: repite el backtest exacto (strategy/smc.py) sobre las velas guardadas ----------
+SMC_WARMUP = 1000   # velas M15 de calentamiento (~2 semanas) para estructura, sesgo H4 y EMA 200 de H1
+
+def process_smc(acc, st, fx):
+    """Las velas cerradas se guardan en el estado (no cambian después) y en cada pasada se simula de nuevo desde el
+    arranque de la cuenta con smc.simulate: las operaciones son exactamente las del backtest con esos datos.
+    Stops y objetivos se evalúan con el máximo/mínimo de cada vela M15 al cerrarse (como en el backtest)."""
+    import pandas as pd
+    if str(HERE / "strategy") not in sys.path: sys.path.insert(0, str(HERE / "strategy"))
+    import smc
+    t = now_utc(); tfms = TF_MS[acc["tf"]]
+    st["status"] = "abierto" if gold_open(t) else "cerrado"
+    store = st.setdefault("bars", [])
+    last = store[-1][0] if store else -1
+    for b in closed_bars(acc["tf"], SMC_WARMUP):
+        if b["t"] > last: store.append([b["t"], round(b["o"], 2), round(b["h"], 2), round(b["l"], 2), round(b["c"], 2)])
+    if not store: return
+    if st.get("start_ms") is None:
+        st["start_ms"] = store[-1][0] + tfms
+        event(st, "Arranque: cuenta de 1000 € lista. Se opera desde la próxima vela M15 cerrada.")
+    k0 = next((k for k, b in enumerate(store) if b[0] >= st["start_ms"]), len(store))
+    if k0 > SMC_WARMUP: del store[:k0 - SMC_WARMUP]                    # solo el calentamiento necesario
+    df = pd.DataFrame(store, columns=["t", "Open", "High", "Low", "Close"])
+    df.index = pd.to_datetime(df.pop("t"), unit="ms", utc=True)
+    i0 = int(df.index.searchsorted(pd.Timestamp(st["start_ms"], unit="ms", tz="UTC")))
+    p = acc["smc"]
+    if gold_open(t):
+        try: st["price"] = last_price()
+        except Exception: pass
+    st["price"] = st.get("price") or float(df.Close.iloc[-1])
+    if i0 >= len(df):
+        st["equity"] = CAPITAL_EUR; return
+    pre = smc.prepare(df, p); cv, tr, so = [], [], {}
+    r = smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=acc["risk"],
+                     curve=cv, trades_out=tr, state_out=so)
+    E = smc.EURUSD   # el backtest convierte a € con EURUSD fijo; la cuenta gemela usa lo mismo para ser idéntica
+    seen = st.get("seen", 0)
+    for x in tr[seen:]:
+        event(st, f"CIERRE {'largo' if x['side'] == 1 else 'corto'} {x['qty']:g} oz a {x['exit']:,.2f} ({x['reason']}) · "
+                  f"{x['pnl_eur']:+,.2f} € ({x['R']:+.2f} R)")
+    st["seen"] = len(tr)
+    st["trades"] = [dict(side="LARGO" if x["side"] == 1 else "CORTO", entry_time=x["t_in"].isoformat(),
+                         exit_time=x["t_out"].isoformat(), units=1, qty=x["qty"], avg_entry=round(x["entry"], 2),
+                         exit=round(x["exit"], 2), pnl=round(x["pnl_eur"], 2), R=round(x["R"], 2), reason=x["reason"])
+                    for x in reversed(tr)]
+    if so["pos"]:
+        sig = f"{so['pos']}@{so['t_open']}"
+        if st.get("open_sig") != sig:
+            q = sum(qq for qq, _ in so["parts"])
+            event(st, f"{'COMPRA' if so['pos'] == 1 else 'VENTA'}: {q:g} oz a {so['entry']:,.2f} · stop {so['stop']:,.2f} · "
+                      f"objetivos {', '.join(f'{tg:,.2f}' for _, tg in so['parts'])} · riesgo {so['risk_usd'] / E:,.0f} €")
+            st["open_sig"] = sig
+        elif so["be"] and not st.get("be_note"):
+            event(st, f"TP1 alcanzado: stop a break even ({so['entry']:,.2f})"); st["be_note"] = True
+    else:
+        st["open_sig"] = None; st["be_note"] = False
+    st["pos"] = so["pos"]; st["stop"] = so["stop"] if so["pos"] else None
+    st["units"] = [[qq, so["entry"], str(so["t_open"])] for qq, _ in so["parts"]] if so["pos"] else []
+    st["cash"] = so["eq"] / E
+    st["equity"] = st["cash"] + (sum(so["pos"] * qq * (st["price"] - so["entry"]) for qq, _ in so["parts"]) / E if so["pos"] else 0.0)
+    curve_eur = [v for v in cv] + [st["equity"]]
+    pk = CAPITAL_EUR; dd = 0.0
+    for v in curve_eur: pk = max(pk, v); dd = min(dd, v / pk - 1)
+    st["peak"] = pk; st["max_dd"] = dd; st["skipped"] = r["skipped"]
+    nz = sum(1 for z in pre["zones"] if 0 <= len(df) - 1 - z["born"] <= p["age"])
+    st["ind"] = dict(bar_time=df.index[-1].isoformat(), close=float(df.Close.iloc[-1]),
+                     bias={1: "alcista", -1: "bajista"}.get(int(pre["bias"][-1]), "neutral"),
+                     ema={1: "precio encima", -1: "precio debajo"}.get(int(pre["ema"][-1]) if pre["ema"] is not None else 0, "—"),
+                     zones=nz, targets=[tg for _, tg in so["parts"]] if so["pos"] else [])
+    nowms = time.time() * 1000
+    if not st["curve"] or nowms - st["curve"][-1][0] >= 5 * 60_000:
+        st["curve"].append([int(nowms), round(st["equity"], 2)])
+        if len(st["curve"]) > 6000: st["curve"] = st["curve"][::2]
 
 # ---------- dashboard ----------
 def spark(curve, w=520, h=120):
@@ -532,6 +614,9 @@ def render(s):
         if acc["fam"] in ("BO", "BOH"):
             trig = (f'Compra si cierra &gt; <b>{fmt(ind.get("don_hi"))}</b>'
                     + (f' · venta si cierra &lt; <b>{fmt(ind.get("don_lo"))}</b>' if acc["shorts"] else ""))
+        elif acc["fam"] == "SMC":
+            trig = (f'Sesgo H4: <b>{ind.get("bias", "—")}</b> · EMA 200 H1: <b>{ind.get("ema", "—")}</b> · zonas vivas: <b>{ind.get("zones", "—")}</b>'
+                    + (f' · objetivos: {", ".join(fmt(x) for x in ind.get("targets", []))}' if ind.get("targets") else ""))
         else:
             trig = f'RSI({acc["rsi"]}) = <b>{fmt(ind.get("rsi"), 1)}</b> · compra si &lt; {acc["lo"]} con tendencia alcista · sale si &gt; {acc["hi"]}'
         wins = [x for x in st["trades"] if x["pnl"] > 0]

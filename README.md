@@ -14,7 +14,9 @@ dashboard en GitHub Pages cada ~7 minutos.
 | Oro M30 | Ruptura con filtro H1 | EMA 200 de H1 + ruptura Donchian 60 + ATR×3 trailing · hasta 3 unidades · largos y cortos · sin entradas en noticias de EE. UU. (08:00–08:45 NY y FOMC 13:30–15:15 NY) | 1 %/unidad |
 | Oro M30 + Sniper (prueba) | Igual que Oro M30 | + solo a favor de SMA 9 > SMA 21 en H1 (indicador QNA Sniper de TradingView). En backtest mejora la prueba (+16,6 %/mes, −12 %), pero empeora PAXG; se corre aparte para comprobarlo en vivo (`strategy/sniper.py`) | 1 %/unidad |
 | Oro M15 | Pullback | EMA 200 de H1 (tendencia) + RSI(2) < 20 para comprar, sale con RSI(2) > 80 · stop ATR×2 · entradas 07–20 UTC | 1 % |
-| Oro M5 | Pullback | EMA 200 de H1 + RSI(3) < 5 para comprar, sale con RSI(3) > 80 · stop ATR×2 · entradas 07–20 UTC | 2 % |
+| Oro M15 · SMC mecánica (control) | SMC del curso | `strategy/smc.py` v2, la mejor combinación de entrenamiento: sesgo de estructura H4 + EMA 200 H1 · Order Block con FVG tras ruptura · confirmación por cierre · stop tras el OB + 0,2 ATR · parciales 2R/3R/4R con break even · killzones · sin entradas en noticias. Repite cada minuto el backtest exacto sobre las velas M15 guardadas. Es la cuenta de control del futuro equipo de agentes (en backtest fuera de muestra perdía −2 %/mes) | 2 % (−5 % diario, 4 pérdidas paran el día) |
+
+La cuenta M5 se retiró el 11/11/2026 (no se pudo validar con datos reales: Vantage no guarda M5 antiguo); su estado queda archivado en `state.json`.
 
 M1 se descartó: ninguna de las 1632 combinaciones probadas fue rentable en los dos periodos de entrenamiento.
 
