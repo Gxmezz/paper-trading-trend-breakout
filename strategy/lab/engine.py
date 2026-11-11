@@ -37,6 +37,10 @@ class RiskConfig:
     min_rr: float | None = None      # p. ej. 2.0: solo operaciones con objetivo >= 2R (si la idea tiene tp_r)
     dd_brake: float | None = None    # p. ej. 0.10: con caída > 10 % desde el máximo, riesgo a la mitad
     max_trades_day: int | None = None
+    cap_eur: float = 1000.0          # capital inicial en €
+    step: float = 1.0                # paso de tamaño en oz (1 = lote mínimo real de Vantage; 0.0001 = tamaño exacto)
+    mark_open: bool = False          # al final, contar la posición abierta (a precio de cierre) como operación en trades/PF
+    cost_pct: float | None = None    # coste por lado en fracción del precio; si se indica, se usa el mayor entre esto y `cost` ($/oz)
 
 # ---------- datos ----------
 _RAW = None
@@ -73,6 +77,8 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
     tp_r = p.get("tp_r"); trail = p.get("trail", False); tk = p.get("trail_atr", p.get("stop_atr", 2.0)); mb = p.get("max_bars")
     day = (df.index - pd.Timedelta(hours=22)).normalize().asi8
     wdy = (df.index - pd.Timedelta(hours=22)).weekday.values
+    CAP = rc.cap_eur * EURUSD; STEP = rc.step
+    cst = np.full(n, cost) if rc.cost_pct is None else np.maximum(cost, rc.cost_pct * o)   # el mayor de los dos
     eq = CAP; peak = CAP; mdd = 0.0; pos = 0; q = 0.0; entry = stop = tp = 0.0; rk = 0.0; t_in = 0
     pend = 0; pend_exit = False; gp = gl = 0.0; ntr = 0; tpnl = 0.0; skipped = 0
     d_start = CAP; consec = 0; locked = False; d_trades = 0; cur = CAP
@@ -92,19 +98,19 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
             d_start = eq + (pos * q * (o[i] - entry) if pos else 0); consec = 0; locked = False; d_trades = 0
             if pos == 1:
                 sw = q * o[i] * SWAP_LONG / 365 * (3 if wdy[i] == 2 else 1); eq -= sw; tpnl -= sw
-        if pend_exit and pos: close(o[i] - pos * cost, i)
+        if pend_exit and pos: close(o[i] - pos * cst[i], i)
         pend_exit = False
         if pend and pos == 0:
             dist = sd[i - 1]; px = o[i]
             r = rc.risk * (0.5 if rc.dd_brake and eq < peak * (1 - rc.dd_brake) else 1.0)
             qq = np.floor(eq * r / dist / STEP) * STEP if dist > 0 and np.isfinite(dist) else 0
             if 0 < dist and np.isfinite(dist) and qq < STEP: qq = STEP if STEP * dist <= eq * rc.max_risk_min_lot else 0
-            risk_amt = qq * (dist + 2 * cost)
+            risk_amt = qq * (dist + 2 * cst[i])
             ok = qq > 0 and qq * px <= eq * MAX_LEV
             if ok and rc.daily_loss and (d_start - eq) + risk_amt > d_start * rc.daily_loss: ok = False
             if ok and rc.min_rr and (tp_r is not None and tp_r < rc.min_rr): ok = False
             if ok:
-                pos = pend; q = qq; entry = px + pos * cost; stop = px - pos * dist; rk = risk_amt; t_in = i; d_trades += 1
+                pos = pend; q = qq; entry = px + pos * cst[i]; stop = px - pos * dist; rk = risk_amt; t_in = i; d_trades += 1
                 tp = px + pos * tp_r * dist if tp_r else np.nan
             else: skipped += 1
         pend = 0
@@ -112,9 +118,9 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
             hit_s = l[i] <= stop if pos == 1 else h[i] >= stop
             hit_t = tp_r and (h[i] >= tp if pos == 1 else l[i] <= tp)
             if hit_s:      # si en la misma vela tocan stop y objetivo, se asume el stop (conservador)
-                close((min(o[i], stop) if pos == 1 else max(o[i], stop)) - pos * cost, i)
+                close((min(o[i], stop) if pos == 1 else max(o[i], stop)) - pos * cst[i], i)
             elif hit_t:
-                close((max(o[i], tp) if pos == 1 else min(o[i], tp)) - pos * cost, i)
+                close((max(o[i], tp) if pos == 1 else min(o[i], tp)) - pos * cst[i], i)
             else:
                 if trail:
                     ns = c[i] - pos * tk * a[i]
@@ -127,6 +133,8 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
         if pos == 0 and not locked and i + 1 < n and not (rc.max_trades_day and d_trades >= rc.max_trades_day):
             if L[i]: pend = 1
             elif S[i]: pend = -1
+    if pos and rc.mark_open:          # posición viva al final del tramo: cuenta como operación (sin coste de salida)
+        u = tpnl + pos * q * (c[i] - entry); gp += max(u, 0); gl += max(-u, 0); ntr += 1
     days = (df.index[-1] - df.index[i0]).days or 1
     ret = cur / CAP - 1
     return dict(trades=ntr, PF=round(gp / gl, 2) if gl else (99.0 if gp else 0.0), ret=round(ret * 100, 1),
