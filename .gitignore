@@ -6,3 +6,4 @@ site/
 *.tmp
 strategy/data/
 strategy/results/
+strategy/lab/audit/*.pkl
