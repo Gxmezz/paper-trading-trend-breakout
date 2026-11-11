@@ -32,6 +32,7 @@ Reglas (ver la nota "Estrategia SMC oro (curso en video)" del vault):
      descarta), pérdida diaria máx. 5 % (no se abre si el riesgo no cabe), 4 pérdidas seguidas paran el día.
 """
 import numpy as np, pandas as pd
+import risk_guard
 from zoneinfo import ZoneInfo
 
 EURUSD = 1.12
@@ -186,9 +187,10 @@ def liq_target(sw, i, px, d, look=12):
 
 
 def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, daily_max=0.05, max_losses=4,
-             curve=None, trades_out=None, state_out=None):
+             curve=None, trades_out=None, state_out=None, signals_out=None):
     """state_out (dict opcional): al terminar recibe la posición abierta (pos, entry, stop, parts, be, t_open, risk_usd)
-    y el capital (eq, cur) para la cuenta en vivo del paper trading. No cambia los resultados."""
+    y el capital (eq, cur) para la cuenta en vivo del paper trading. signals_out (lista opcional): cada setup confirmado
+    con los filtros que cumple y qué pasó (operado o motivo del descarte). Ninguno de los dos cambia los resultados."""
     pre = pre or prepare(df, p)
     o, h, l, c, a = pre["o"], pre["h"], pre["l"], pre["c"], pre["a"]
     bias, ema_ok, block, flat = pre["bias"], pre["ema"], pre["block"], pre["flat"]
@@ -204,7 +206,7 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
     zi = 0; active = []
     eq = CAP; peak = CAP; mdd = 0.0
     pos = 0; parts = []; stop = 0.0; entry = 0.0; be_done = False; trade_pnl = 0.0; risk_usd = 0.0; t_open = None
-    pend = None
+    pend = None; pend_sig = None
     day_start = eq; day_losses = 0; cur_day = None
     ntr = 0; gp = gl = 0.0; skipped = 0; wins = 0; q_open = 0.0
     N = len(c)
@@ -237,12 +239,11 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
                 Lr = (lv - px) * d / dist if lv is not None else 0
                 if Lr < 2: dist = 0; skipped += 1
                 else: Lr = min(Lr, 8.0); tps = (1.0, (1.0 + Lr) / 2, Lr)
+            why = "objetivo de liquidez a < 2R" if dist <= 0 else ""
             if dist > 0:
-                q = np.floor(eq * risk / dist / STEP) * STEP
-                if q < STEP: q = STEP if STEP * dist <= eq * max_risk else 0
-                day_loss = (day_start - eq) / day_start
-                if q and day_loss + q * dist / eq > daily_max + 1e-9: q = 0
-                if q and q * px > eq * MAX_LEV: q = np.floor(eq * MAX_LEV / px / STEP) * STEP
+                q, why = risk_guard.size_entry(eq, day_start, day_losses, px, dist, risk=risk, max_risk=max_risk,
+                                               daily_max=daily_max, max_losses=max_losses, targets_r=list(tps) if tpm == "R" else None,
+                                               step=STEP, max_lev=MAX_LEV)
                 if q >= STEP:
                     n_parts = int(min(len(tps), q))
                     base = np.floor(q / n_parts); rest = q - base * n_parts
@@ -252,8 +253,13 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
                         qq = base + (1 if k < rest else 0)
                         parts.append([qq, px + d * tps[ti] * dist])
                     pos = d; entry = px; stop = sl_px; be_done = False; risk_usd = q * dist; t_open = i; q_open = q
+                    why = "operado"
                 else:
                     skipped += 1
+            if signals_out is not None and pend_sig is not None:
+                signals_out[pend_sig]["result"] = why if why != "ok" else "operado"
+                if why == "operado": signals_out[pend_sig].update(qty=float(q), entry=float(px))
+            pend_sig = None
         # --- gestión de la posición
         if pos:
             if rday[i] != rday[i - 1] and pos == 1:
@@ -331,9 +337,21 @@ def simulate(df, i0, p, pre=None, cost_side=0.20, risk=0.02, max_risk=0.02, dail
             can = (pos == 0 and pend is None and i + 1 < N and bias[i] == d and in_sess[i] and pd_ok
                    and day_losses < max_losses and (ema_ok is None or ema_ok[i] == d)
                    and not (news != "off" and (block[i] or (i + 1 < N and block[i + 1]))))
+            if signals_out is not None:
+                why = [k for k, v in (("posición abierta", pos == 0 and pend is None), ("fin de datos", i + 1 < N),
+                                      ("sesgo en contra", bias[i] == d), ("fuera de killzone/sesión", in_sess[i]),
+                                      ("premium/descuento", pd_ok), (f"{max_losses} pérdidas hoy", day_losses < max_losses),
+                                      ("EMA/Sniper en contra", ema_ok is None or ema_ok[i] == d),
+                                      ("noticia", not (news != "off" and (block[i] or (i + 1 < N and block[i + 1])))))
+                       if not v]
+                sl_tmp = (min(z["lo"], z["ext"]) - p["sl"] * a[i]) if d == 1 else (max(z["hi"], z["ext"]) + p["sl"] * a[i])
+                signals_out.append(dict(time=df.index[i], side=int(d), zone_lo=float(z["lo"]), zone_hi=float(z["hi"]),
+                                        stop=float(sl_tmp), close=float(c[i]), atr=float(a[i]),
+                                        result="pendiente" if can else "descartado: " + ", ".join(why)))
             if can:
                 sl_px = (min(z["lo"], z["ext"]) - p["sl"] * a[i]) if d == 1 else (max(z["hi"], z["ext"]) + p["sl"] * a[i])
                 pend = (d, sl_px)
+                if signals_out is not None: pend_sig = len(signals_out) - 1
             # la zona se consume tanto si se entra como si no
         active = alive
     if state_out is not None:

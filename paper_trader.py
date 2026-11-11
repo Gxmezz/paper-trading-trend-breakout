@@ -437,9 +437,14 @@ def process_smc(acc, st, fx):
     st["price"] = st.get("price") or float(df.Close.iloc[-1])
     if i0 >= len(df):
         st["equity"] = CAPITAL_EUR; return
-    pre = smc.prepare(df, p); cv, tr, so = [], [], {}
+    pre = smc.prepare(df, p); cv, tr, so, sg = [], [], {}, []
     r = smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=acc["risk"],
-                     curve=cv, trades_out=tr, state_out=so)
+                     curve=cv, trades_out=tr, state_out=so, signals_out=sg)
+    # registro de decisiones: cada setup SMC confirmado, con lo que se hizo y por qué (también lo usarán los agentes)
+    st["setups_total"] = len(sg); st["setups_taken"] = sum(1 for x in sg if x["result"] == "operado")
+    st["setups"] = [dict(time=x["time"].isoformat(), side="LARGO" if x["side"] == 1 else "CORTO",
+                         zone=[round(x["zone_lo"], 2), round(x["zone_hi"], 2)], stop=round(x["stop"], 2),
+                         close=round(x["close"], 2), result=x["result"]) for x in sg[-100:]][::-1]
     E = smc.EURUSD   # el backtest convierte a € con EURUSD fijo; la cuenta gemela usa lo mismo para ser idéntica
     seen = st.get("seen", 0)
     for x in tr[seen:]:
@@ -496,6 +501,48 @@ def spark(curve, w=520, h=120):
 # Colores por cuenta (paleta categórica para fondo oscuro; el color sigue a la cuenta, no a su posición)
 SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9", "#e66767", "#008300"]
 def acc_color(i): return SERIES_COLORS[i % len(SERIES_COLORS)]
+
+SMC_EVAL_TRADES = 100   # criterio fijado: evaluar el experimento con >= 100 operaciones o 3 meses
+SMC_EVAL_DAYS = 91
+
+def smc_stats(st):
+    tr = st.get("trades", []); n = len(tr); wins = [x for x in tr if x["pnl"] > 0]
+    gp = sum(x["pnl"] for x in wins); gl = -sum(x["pnl"] for x in tr if x["pnl"] <= 0)
+    return dict(n=n, wr=f"{len(wins) / n * 100:.0f} %" if n else "—", pf=f"{gp / gl:.2f}" if gl > 0 else ("∞" if gp > 0 else "—"),
+                r=f"{sum(x['R'] for x in tr) / n:+.2f}" if n else "—", pl=st.get("equity", CAPITAL_EUR) - CAPITAL_EUR,
+                dd=st.get("max_dd", 0.0), setups=st.get("setups_total", 0), taken=st.get("setups_taken", 0))
+
+def smc_section(s):
+    """Experimento: equipo de agentes SMC frente a la gemela mecánica (mismos setups, mismo riesgo)."""
+    mec = s["accounts"].get("gold_smc_mec")
+    if not mec: return ""
+    ag = s["accounts"].get("gold_smc_agents")
+    a, b = smc_stats(mec), (smc_stats(ag) if ag else None)
+    def col(x, k, f=lambda v: v): return f(x[k]) if x else '<span class="muted">fase 2</span>'
+    rows = [("Operaciones", "n", str), ("Acierto", "wr", str), ("PF", "pf", str), ("R medio por operación", "r", str),
+            ("Resultado", "pl", lambda v: f'<span class="{"up" if v > 0 else "dn" if v < 0 else ""}">{v:+,.2f} €</span>'),
+            ("Caída máx.", "dd", lambda v: f"{v * 100:.2f} %"), ("Setups detectados / operados", "setups", None)]
+    body = ""
+    for name, k, f in rows:
+        if k == "setups":
+            bt = f'{b["setups"]} / {b["taken"]}' if b else '<span class="muted">fase 2</span>'
+            body += f'<tr><td>{name}</td><td>{a["setups"]} / {a["taken"]}</td><td>{bt}</td></tr>'
+        else:
+            body += f'<tr><td>{name}</td><td>{f(a[k])}</td><td>{col(b, k, f)}</td></tr>'
+    start = mec.get("start_ms"); days = (time.time() * 1000 - start) / 86_400_000 if start else 0
+    prog = (f'Progreso hacia la evaluación: <b>{a["n"]}</b> de {SMC_EVAL_TRADES} operaciones · <b>{days:.0f}</b> de {SMC_EVAL_DAYS} días '
+            f'(lo que llegue antes). Criterio fijado: la cuenta de agentes debe ganar a la mecánica y a entradas al azar con la misma gestión.')
+    setups = mec.get("setups", [])[:15]
+    srows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["side"]}</td><td>{fmt(x["zone"][0])} – {fmt(x["zone"][1])}</td>'
+                    f'<td>{fmt(x["stop"])}</td><td class="{"up" if x["result"] == "operado" else "muted"}">{html.escape(x["result"])}</td></tr>'
+                    for x in setups) or '<tr><td colspan="5" class="muted">Aún no se ha detectado ningún setup</td></tr>'
+    return f'''<h2 style="margin-top:22px">Experimento SMC: agentes frente a mecánica</h2>
+<div class="sub">Las dos cuentas ven los mismos setups SMC y pasan por el mismo guardián de riesgo (2 % por operación, −5 % diario,
+4 pérdidas paran el día, ratio ≥ 2:1, el stop solo puede acercarse). La única diferencia será el juicio de los agentes.</div>
+<div class="tablewrap"><table class="summary"><tr><th></th><th>SMC mecánica (control)</th><th>SMC agentes</th></tr>{body}</table></div>
+<div class="sub" style="margin-top:6px">{prog}</div>
+<details style="margin-top:8px"><summary>Registro de setups detectados (últimos 15, hora de Madrid)</summary>
+<table><tr><th>Vela</th><th>Lado</th><th>Zona</th><th>Stop</th><th>Decisión</th></tr>{srows}</table></details>'''
 
 def summary_table(s, fx):
     rows = []
@@ -645,6 +692,7 @@ def render(s):
                          f'<td>{iso_madrid(x["exit_time"])}</td><td>{x["qty"]:g}</td><td>{fmt(x["avg_entry"])}</td><td>{fmt(x["exit"])}</td>'
                          f'<td class="{"up" if x["pnl"] >= 0 else "dn"}">{x["pnl"]:+,.2f}</td><td>{x["R"]:+.2f}</td><td>{html.escape(x["reason"])}</td></tr>'))
     rows.sort(reverse=True)
+    smc_html = smc_section(s)
     trades_html = "".join(r for _, r in rows) or '<tr><td colspan="10" class="muted">Aún no hay operaciones cerradas</td></tr>'
     note = os.environ.get("PT_NOTE", "Si esta hora tiene más de 2 minutos, el proceso no está corriendo.")
     DASH.write_text(f'''<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
@@ -688,6 +736,7 @@ Costes 0,20 $/oz por lado y swap de largos 6 %/año. {html.escape(note)}</div>
 {summary_table(s, fx)}
 <h2 style="margin-top:22px">Capital de cada cuenta</h2>
 {equity_chart(s)}
+{smc_html}
 <h2 style="margin-top:22px">Detalle por cuenta</h2>
 <div class="grid">{"".join(cards)}</div>
 <h2 style="margin-top:22px">Operaciones cerradas</h2>
