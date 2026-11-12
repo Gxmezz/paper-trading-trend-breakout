@@ -86,6 +86,10 @@ Para repetirlo: `python strategy/download_data.py`, luego `python strategy/smc_o
 - Prueba jul–nov 2026: 37 de los 40 mejores pierden. El mejor gana +0,9 %/mes con una caída de −8 %; los que usan el filtro Sniper pierden entre −5 y −8 %/mes.
 - **Decisión**: la SMC sigue fuera del paper trading. El examen final (PAXG jul–dic 2024) queda sin usar para una futura estrategia candidata.
 
+## Vista S&P 500
+
+El dashboard tiene dos pestañas: **Oro** (las cuentas de oro y el experimento de agentes) y **S&P 500**. La cuenta *S&P 500 · RSI(2)* es la única idea del laboratorio de índices (`strategy/lab/daily`, `--asset SPX`) que aprobó el walk-forward 1990-2024, la auditoría del escéptico y el examen 2025-26 (`strategy/lab/daily/EXAMEN_INDICES.md`): compra a la apertura cuando el RSI(2) diario cierra por debajo de 25 sobre la media de 100 sesiones y vende tras un cierre con RSI(2) > 70 o a los 10 días (stop 3 ATR). Toma las sesiones ya cerradas de Yahoo (^GSPC) y el tipo a 3 meses (^IRX), y repite cada vez el backtest exacto con el motor del laboratorio (CFD SP500.r de Vantage: 0,1 lote mínimo, riesgo 2 % sin forzar el tamaño, −5 % diario, costes 0,01 % por lado, swap por tipo de interés).
+
 ## Condiciones simuladas
 
 - Cuenta en EUR: el resultado en USD se convierte al EURUSD del momento.

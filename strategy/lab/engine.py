@@ -63,7 +63,8 @@ def atr(df, n=14):
     return tr.ewm(alpha=1 / n, adjust=False).mean()
 
 # ---------- simulación ----------
-def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
+def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None, state_out=None):
+    """state_out (dict opcional): al terminar recibe la posición abierta y la orden pendiente (para el paper trading)."""
     rc = rc or RiskConfig()
     o, h, l, c = (df[k].values for k in ("Open", "High", "Low", "Close"))
     a = atr(df).values
@@ -90,7 +91,8 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
         pnl = pos * q * (px - entry); eq += pnl; tpnl += pnl
         gp += max(tpnl, 0); gl += max(-tpnl, 0); ntr += 1
         if trades is not None:
-            trades.append(dict(t_in=df.index[t_in], t_out=df.index[i], dir=pos, pnl=tpnl / EURUSD, R=tpnl / rk if rk else 0.0))
+            trades.append(dict(t_in=df.index[t_in], t_out=df.index[i], dir=pos, pnl=tpnl / EURUSD, R=tpnl / rk if rk else 0.0,
+                               entry=float(entry), exit=float(px), qty=float(q)))
         consec = consec + 1 if tpnl < 0 else 0
         if (rc.max_consec and consec >= rc.max_consec) or (rc.daily_loss and eq <= d_start * (1 - rc.daily_loss)): locked = True
         tpnl = 0.0; pos = 0
@@ -139,6 +141,10 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
             elif S[i]: pend = -1
     if pos and rc.mark_open:          # posición viva al final del tramo: cuenta como operación (sin coste de salida)
         u = tpnl + pos * q * (c[i] - entry); gp += max(u, 0); gl += max(-u, 0); ntr += 1
+    if state_out is not None:
+        state_out.update(pos=int(pos), qty=float(q) if pos else 0.0, entry=float(entry), stop=float(stop),
+                         t_in=(df.index[t_in] if pos else None), pend=int(pend), pend_exit=bool(pend_exit), eq=float(eq),
+                         cur=float(cur), skipped=skipped)
     days = (df.index[-1] - df.index[i0]).days or 1
     ret = cur / CAP - 1
     return dict(trades=ntr, PF=round(gp / gl, 2) if gl else (99.0 if gp else 0.0), ret=round(ret * 100, 1),

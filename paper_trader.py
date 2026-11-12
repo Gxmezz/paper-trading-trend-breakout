@@ -75,6 +75,17 @@ ACCOUNTS = [
               "mover objetivos o cerrar (todo o una parte). Fase 4: noticias y sentimiento. Fase 5: un agente de riesgo "
               "(Opus 5.5) revisa la cuenta cada día y puede reducir el riesgo o pausar las entradas, nunca aumentarlo."),
 ]
+ACCOUNTS.append(
+    dict(id="spx_rsi2", view="spx", name="S&P 500 · RSI(2) (reversión corta)", tf="1d", fam="IDX", asset="SPX",
+         idea="ix_mr_rsi2", params=dict(th=25, ma=100, exit="rsi70", stop_atr=3.0, max_bars=10), risk=0.02,
+         desc="Compra al abrir la sesión siguiente cuando el RSI(2) diario cierra por debajo de 25 con el S&P 500 sobre su media "
+              "de 100 sesiones; vende al abrir tras un cierre con RSI(2) > 70 o a los 10 días; stop 3 ATR. Solo largos. "
+              "La única idea del laboratorio que aprobó el walk-forward 1990-2024, al escéptico y el examen 2025-26 (por poco). "
+              "CFD SP500.r de Vantage: 0,1 lote mínimo (= 0,1 × índice $), riesgo 2 % sin forzar el tamaño, −5 % diario, "
+              "costes 0,01 % por lado, swap de largos = tipo a 3 meses + 3 % − dividendos."))
+VIEWS = [("oro", "Oro"), ("spx", "S&P 500")]
+def view_of(acc): return acc.get("view", "oro")
+
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 GATE = "https://api.gateio.ws/api/v4/futures/usdt"
 BINANCE = {"fapi": "https://fapi.binance.com/fapi/v1", "spot": "https://data-api.binance.vision/api/v3"}
@@ -320,6 +331,7 @@ def build_indicators(acc, bars, htf_bars):
     return T, A, R, SN
 
 def process(acc, st, fx):
+    if acc["fam"] == "IDX": return process_idx(acc, st, fx)
     if acc["fam"] == "SMC": return process_smc(acc, st, fx)
     if acc["fam"] == "SMC_AGENT": return process_smc_agent(acc, st, fx)
     t = now_utc(); nowms = time.time() * 1000
@@ -414,6 +426,125 @@ def process(acc, st, fx):
         if not st["curve"] or nowms - st["curve"][-1][0] >= 5 * 60_000:
             st["curve"].append([int(nowms), round(st["equity"], 2)])
             if len(st["curve"]) > 6000: st["curve"] = st["curve"][::2]
+
+# ---------- cuentas de índices (vista propia): velas diarias de Yahoo, mismo motor que el laboratorio ----------
+YF = "https://query1.finance.yahoo.com/v8/finance/chart/"
+IDX_SYM = {"SPX": "^GSPC", "NDX": "^NDX"}
+
+def _yahoo_daily(sym, rng="2y"):
+    r = requests.get(YF + sym, params=dict(range=rng, interval="1d"), headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    r.raise_for_status(); j = r.json()["chart"]["result"][0]; q = j["indicators"]["quote"][0]
+    days = [datetime.fromtimestamp(t, NY).date().isoformat() for t in j["timestamp"]]
+    rows = [[d, o, h, l, c] for d, o, h, l, c in zip(days, q["open"], q["high"], q["low"], q["close"]) if None not in (o, h, l, c)]
+    return rows, j["meta"].get("regularMarketPrice")
+
+def process_idx(acc, st, fx):
+    """Guarda las sesiones diarias ya cerradas (16:15 NY) y repite cada vez el backtest exacto desde el arranque de la cuenta
+    con el motor del laboratorio (strategy/lab/engine.py) y la idea aprobada (strategy/lab/daily/ideas)."""
+    import pandas as pd
+    for sub in ("strategy/lab", "strategy/lab/daily", "strategy/lab/daily/ideas"):
+        if str(HERE / sub) not in sys.path: sys.path.insert(0, str(HERE / sub))
+    os.environ.setdefault("LAB_ASSET", acc["asset"])
+    import importlib, engine as LE, dind
+    cfg = dind.ASSETS[acc["asset"]]
+    t = now_utc(); ny = t.astimezone(NY)
+    st["status"] = "abierto" if ny.weekday() < 5 and (9, 30) <= (ny.hour, ny.minute) < (16, 0) else "cerrado"
+    if time.time() - st.get("fetched_at", 0) < 10 * 60 and st.get("bars"): pass
+    else:
+        st["fetched_at"] = time.time()
+        rows, live = _yahoo_daily(IDX_SYM[acc["asset"]])
+        irx, _ = _yahoo_daily("^IRX", "1mo")
+        today = ny.date().isoformat(); closed = (ny.hour, ny.minute) >= (16, 15)
+        store = st.setdefault("bars", []); last = store[-1][0] if store else ""
+        for d, o, h, l, c in rows:
+            if d > last and (d < today or (d == today and closed)): store.append([d, round(o, 2), round(h, 2), round(l, 2), round(c, 2)])
+        rates = st.setdefault("rates", {})
+        for d, *_, c in irx: rates.setdefault(d, round(c, 3))
+        if live: st["price"] = float(live)
+    store = st.get("bars") or []
+    if len(store) < 150: return
+    if st.get("start_date") is None:
+        st["start_date"] = (datetime.fromisoformat(store[-1][0]) + timedelta(days=1)).date().isoformat()
+        event(st, f"Arranque: cuenta de 1000 € lista. Opera desde la sesión del {st['start_date']} (señal al cierre, entrada a la apertura siguiente).")
+    del store[:max(0, len(store) - 600)]
+    x = pd.DataFrame(store, columns=["d", "Open", "High", "Low", "Close"]); dates = pd.to_datetime(x.pop("d"))
+    df = pd.DataFrame(x.values, columns=["Open", "High", "Low", "Close"],
+                      index=(pd.DatetimeIndex(dates) - pd.Timedelta(days=1)).tz_localize("UTC") + pd.Timedelta(hours=22))
+    df["date"] = dates.values
+    rt = pd.Series(st.get("rates", {}), dtype=float); rt.index = pd.to_datetime(rt.index)
+    r = (rt.reindex(pd.DatetimeIndex(dates).union(rt.index)).ffill().bfill().reindex(dates).values / 100) if len(rt) else 0.04
+    df["swl"] = r + (cfg["swap"] - cfg["div"]) / 100; df["sws"] = r - (cfg["swap"] + cfg["div"]) / 100
+    df["swn"] = pd.Series(pd.DatetimeIndex(dates)).diff().dt.days.fillna(1).clip(1, 5).values
+    i0 = int((df["date"] < pd.Timestamp(st["start_date"])).sum())
+    st["price"] = st.get("price") or float(df.Close.iloc[-1])
+    idea = importlib.import_module(acc["idea"]); p = acc["params"]
+    rc = LE.RiskConfig(risk=acc["risk"], max_risk_min_lot=acc["risk"], daily_loss=0.05, max_consec=4, cap_eur=CAPITAL_EUR,
+                       step=0.1, cost_pct=cfg["cost"][1])
+    sig = idea.signals(df, p)
+    tr, cv, so = [], [], {}
+    if i0 < len(df): LE.simulate(df, i0, sig, p, cost=cfg["cost"][0], rc=rc, trades=tr, curve=cv, state_out=so)
+    else: so = dict(pos=0, pend=0, eq=CAPITAL_EUR * LE.EURUSD, qty=0.0, entry=0.0, stop=0.0, t_in=None, pend_exit=False, skipped=0)
+    E = LE.EURUSD
+    for x_ in tr[st.get("seen", 0):]:
+        event(st, f"CIERRE largo {x_['qty']:g} a {x_['exit']:,.2f} · {x_['pnl']:+,.2f} € ({x_['R']:+.2f} R)")
+    st["seen"] = len(tr)
+    st["trades"] = [dict(side="LARGO", entry_time=(x_["t_in"] + pd.Timedelta(hours=2)).isoformat(),
+                         exit_time=(x_["t_out"] + pd.Timedelta(hours=2)).isoformat(), units=1, qty=x_["qty"],
+                         avg_entry=round(x_["entry"], 2), exit=round(x_["exit"], 2), pnl=round(x_["pnl"], 2), R=round(x_["R"], 2),
+                         reason="salida por señal o tiempo" if x_["R"] > -0.95 else "stop") for x_ in reversed(tr)]
+    sigtxt = f"{so.get('pos')}@{so.get('t_in')}"
+    if so.get("pos") and st.get("open_sig") != sigtxt:
+        event(st, f"COMPRA {so['qty']:g} a {so['entry']:,.2f} · stop {so['stop']:,.2f}"); st["open_sig"] = sigtxt
+    if not so.get("pos"): st["open_sig"] = None
+    st["pos"] = so.get("pos", 0); st["stop"] = so["stop"] if st["pos"] else None
+    st["units"] = [[so["qty"], so["entry"], str(so["t_in"])]] if st["pos"] else []
+    st["cash"] = so["eq"] / E
+    st["equity"] = st["cash"] + (so["qty"] * (st["price"] - so["entry"]) / E if st["pos"] else 0.0)
+    pk = CAPITAL_EUR; dd = 0.0
+    for v in list(cv) + [st["equity"]]: pk = max(pk, v); dd = min(dd, v / pk - 1)
+    st["peak"] = pk; st["max_dd"] = dd; st["skipped"] = so.get("skipped", 0)
+    c = df.Close; rsi2 = float(dind.rsi(c, 2).iloc[-1]); ma = float(dind.sma(c, p["ma"]).iloc[-1])
+    st["ind"] = dict(close=float(c.iloc[-1]), session=str(store[-1][0]), rsi2=round(rsi2, 1), ma=round(ma, 2),
+                     pend="compra" if so.get("pend") == 1 else ("venta" if so.get("pend_exit") else ""),
+                     atr=round(float(LE.atr(df).iloc[-1]), 2))
+    nowms = time.time() * 1000
+    if not st["curve"] or nowms - st["curve"][-1][0] >= 5 * 60_000:
+        st["curve"].append([int(nowms), round(st["equity"], 2)])
+        if len(st["curve"]) > 6000: st["curve"] = st["curve"][::2]
+
+def idx_card(acc, st, k):
+    ind = st.get("ind", {}); pl = st["equity"] - CAPITAL_EUR; tr = st["trades"]
+    w = [x for x in tr if x["pnl"] > 0]; gp = sum(x["pnl"] for x in w); gl = -sum(x["pnl"] for x in tr if x["pnl"] <= 0)
+    pf = f"{gp / gl:.2f}" if gl > 0 else ("∞" if gp > 0 else "—"); wr = f"{len(w) / len(tr) * 100:.0f} %" if tr else "—"
+    if st.get("pos"):
+        q, e, _ = st["units"][0]; un = q * ((st.get("price") or e) - e) / 1.12
+        pos_html = (f'<div class="pos long">LARGO · {q:g} (= {q:g} lotes de SP500) · entrada {fmt(e)}<br>Stop: <b>{fmt(st["stop"])}</b> · '
+                    f'P/L abierto: <b class="{"up" if un >= 0 else "dn"}">{un:+,.2f} €</b></div>')
+    else:
+        pos_html = '<div class="pos flat">Sin posición · esperando señal</div>'
+    pend = {"compra": "📌 Señal de compra: entrará a la apertura de la próxima sesión (15:30 en Madrid).",
+            "venta": "📌 Señal de salida: venderá a la apertura de la próxima sesión."}.get(ind.get("pend", ""), "")
+    trig = (f'Última sesión cerrada: <b>{html.escape(str(ind.get("session", "—")))}</b> · cierre {fmt(ind.get("close"))} · '
+            f'RSI(2) = <b>{fmt(ind.get("rsi2"), 1)}</b> (compra si &lt; {acc["params"]["th"]}) · media {acc["params"]["ma"]} = {fmt(ind.get("ma"))} '
+            f'({"✔ por encima" if (ind.get("close") or 0) > (ind.get("ma") or 0) else "✘ por debajo"}) · ATR {fmt(ind.get("atr"))}')
+    return f'''
+<div class="card">
+  <div class="head"><h2>{acc["name"]}</h2><span class="badge {"open" if st["status"] == "abierto" else "closed"}">{"● Sesión abierta" if st["status"] == "abierto" else "○ Sesión cerrada"}</span></div>
+  <div class="sub">{html.escape(acc["desc"])}</div>
+  <div class="kpis">
+    <div><span>Capital</span><b>{fmt(st["equity"])} €</b></div>
+    <div><span>Resultado</span><b class="{"up" if pl >= 0 else "dn"}">{pl:+,.2f} € ({pl / CAPITAL_EUR * 100:+.2f} %)</b></div>
+    <div><span>S&amp;P 500</span><b>{fmt(st.get("price"))}</b></div>
+    <div><span>Caída máx.</span><b>{st["max_dd"] * 100:.2f} %</b></div>
+    <div><span>Operaciones</span><b>{len(tr)} · acierto {wr} · PF {pf}</b></div>
+    <div><span>Señales sin operar (riesgo)</span><b>{st.get("skipped", 0)}</b></div>
+  </div>
+  {pos_html}
+  <div class="ind">{trig}</div>
+  <div class="ind">{pend}</div>
+  {spark(st["curve"])}
+  <details><summary>Eventos</summary><ul>{"".join(f"<li>{html.escape(e)}</li>" for e in st["events"][:25])}</ul></details>
+</div>'''
 
 # ---------- cuenta SMC mecánica: repite el backtest exacto (strategy/smc.py) sobre las velas guardadas ----------
 SMC_WARMUP = 1000   # velas M15 de calentamiento (~2 semanas) para estructura, sesgo H4 y EMA 200 de H1
@@ -951,10 +1082,10 @@ def smc_section(s):
 <details style="margin-top:8px"><summary>Gestión de operaciones abiertas (últimas 15 revisiones, hora de Madrid)</summary>
 <div class="tablewrap"><table><tr><th>Vela</th><th>R en ese momento</th><th>Acción</th><th>Resultado</th><th>Motivo del gestor</th><th>Coste</th></tr>{mrows}</table></div></details>'''
 
-def summary_table(s, fx):
-    rows = []
-    best = max(ACCOUNTS, key=lambda a: s["accounts"][a["id"]]["equity"])["id"]
-    for k, acc in enumerate(ACCOUNTS):
+def summary_table(s, fx, accs=None):
+    rows = []; accs = accs or ACCOUNTS
+    best = max(accs, key=lambda a: s["accounts"][a["id"]]["equity"])["id"]
+    for k, acc in enumerate(accs):
         st = s["accounts"][acc["id"]]; px = st.get("price")
         pl = st["equity"] - CAPITAL_EUR
         tr = st["trades"]; wins = [x for x in tr if x["pnl"] > 0]
@@ -976,10 +1107,10 @@ def summary_table(s, fx):
     return ('<div class="tablewrap"><table class="summary"><tr><th>Cuenta</th><th>Capital</th><th>Resultado</th><th>Operaciones</th>'
             '<th>Acierto</th><th>PF</th><th>Caída máx.</th><th>Posición abierta</th></tr>' + "".join(rows) + "</table></div>")
 
-def equity_chart(s):
+def equity_chart(s, accs=None):
     """Curvas de capital de todas las cuentas en un solo gráfico SVG con ejes, leyenda y tooltip."""
     series = []
-    for k, acc in enumerate(ACCOUNTS):
+    for k, acc in enumerate(accs or ACCOUNTS):
         cv = s["accounts"][acc["id"]]["curve"]
         if cv: series.append(dict(name=acc["name"], color=acc_color(k), pts=cv))
     if not series or max(len(x["pts"]) for x in series) < 2:
@@ -1046,13 +1177,23 @@ def fmt(v, d=2): return f"{v:,.{d}f}" if isinstance(v, (int, float)) else "—"
 
 def render(s):
     cards = []; rows = []; fx = s.get("fx") or 1.12
-    tot = sum(st["equity"] for st in s["accounts"].values()); tot0 = CAPITAL_EUR * len(ACCOUNTS)
+    oro = [a for a in ACCOUNTS if view_of(a) == "oro"]; spx = [a for a in ACCOUNTS if view_of(a) == "spx"]
+    tot = sum(s["accounts"][a["id"]]["equity"] for a in oro); tot0 = CAPITAL_EUR * len(oro)
+    tot_s = sum(s["accounts"][a["id"]]["equity"] for a in spx); tot0_s = CAPITAL_EUR * len(spx)
     off = int(madrid(now_utc()).utcoffset().total_seconds() // 3600)
     oi = s.get("offset_info") or {}
     price_src = (f"{GOLD_SYMBOL} de Gate.io corregido al spot ({oi.get('src', '—')}): diferencia {-(s.get('offset') or 0):+.2f} $"
                  + (f" (medida {iso_madrid(oi['at'])})" if oi.get("at") else "")) if GOLD_API == "gate" else GOLD_SYMBOL
     sess_mad = f"{7 + off:02d}-{20 + off:02d} h en Madrid"
-    for acc in ACCOUNTS:
+    idx_cards, idx_rows = [], []
+    for k_, acc in enumerate(ACCOUNTS):
+        if view_of(acc) != "oro":
+            st = s["accounts"][acc["id"]]; idx_cards.append(idx_card(acc, st, k_))
+            for x in st["trades"]:
+                idx_rows.append((x["exit_time"], f'<tr><td>{acc["name"]}</td><td>{x["side"]}</td><td>{iso_madrid(x["entry_time"])}</td>'
+                                 f'<td>{iso_madrid(x["exit_time"])}</td><td>{x["qty"]:g}</td><td>{fmt(x["avg_entry"])}</td><td>{fmt(x["exit"])}</td>'
+                                 f'<td class="{"up" if x["pnl"] >= 0 else "dn"}">{x["pnl"]:+,.2f}</td><td>{x["R"]:+.2f}</td><td>{html.escape(x["reason"])}</td></tr>'))
+            continue
         st = s["accounts"][acc["id"]]; ind = st.get("ind", {}); px = st.get("price")
         pl = st["equity"] - CAPITAL_EUR
         qty = sum(q for q, _, _ in st["units"])
@@ -1105,9 +1246,11 @@ def render(s):
     rows.sort(reverse=True)
     smc_html = smc_section(s)
     trades_html = "".join(r for _, r in rows) or '<tr><td colspan="10" class="muted">Aún no hay operaciones cerradas</td></tr>'
+    idx_rows.sort(reverse=True)
+    idx_trades = "".join(r for _, r in idx_rows) or '<tr><td colspan="10" class="muted">Aún no hay operaciones cerradas</td></tr>'
     note = os.environ.get("PT_NOTE", "Si esta hora tiene más de 2 minutos, el proceso no está corriendo.")
     DASH.write_text(f'''<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
-<title>Paper trading · Oro Vantage</title>
+<title>Paper trading · Vantage</title>
 <style>
 body{{font-family:Segoe UI,system-ui,sans-serif;background:#0f1419;color:#d7dde4;margin:0;padding:24px}}
 h1{{margin:0 0 4px;font-size:22px}} h2{{margin:0;font-size:17px}} .muted,.sub{{color:#8b97a5;font-size:13px}}
@@ -1136,22 +1279,44 @@ table.summary th{{color:#8b97a5;font-weight:600;font-size:12px}} table.summary t
 #eqc .grid{{stroke:#243040;stroke-width:1}} #eqc .base{{stroke:#5b6876;stroke-dasharray:4 4}} #eqc .tick{{stroke:#3a4654}} #eqc .ax{{fill:#8b97a5;font-size:12px}} #eqc .xh{{stroke:#8b97a5;stroke-width:1}}
 .tip{{position:absolute;top:8px;background:#0f1419;border:1px solid #3a4654;border-radius:8px;padding:8px 10px;font-size:12px;pointer-events:none;min-width:220px}}
 .tip .th{{color:#8b97a5;margin-bottom:4px}} .tip .tr{{display:flex;align-items:center;gap:6px;margin:2px 0}} .tip .tr b{{min-width:80px;text-align:right}} .tip .tr span{{color:#aab4bf}}
+.tabs{{display:flex;gap:8px;margin:0 0 16px}} .tabs a{{color:#d7dde4;text-decoration:none;padding:7px 16px;border-radius:8px;background:#161c23;border:1px solid #243040;font-size:14px}}
+.tabs a.on{{background:#1f3a5c;border-color:#3987e5}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
+<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#spx" data-v="spx">S&amp;P 500</a></nav>
+<section class="view" id="v-oro">
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
 <div class="muted">Dinero ficticio · precio del oro: {price_src} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
 <div class="total">Total: <b>{tot:,.2f} €</b> <span class="{"up" if tot >= tot0 else "dn"}">({(tot / tot0 - 1) * 100:+.2f} %)</span> <span class="muted">de {tot0:,.0f} €</span></div></div>
 <div class="warn">Simulación con dinero ficticio. Cada estrategia tiene su propia cuenta de 1000 €. Lotes como en Vantage (mínimo 0,01 lote = 1 oz).
 Costes 0,20 $/oz por lado y swap de largos 6 %/año. {html.escape(note)}</div>
 <h2>Comparativa</h2>
-{summary_table(s, fx)}
+{summary_table(s, fx, oro)}
 <h2 style="margin-top:22px">Capital de cada cuenta</h2>
-{equity_chart(s)}
+{equity_chart(s, oro)}
 {smc_html}
 <h2 style="margin-top:22px">Detalle por cuenta</h2>
 <div class="grid">{"".join(cards)}</div>
 <h2 style="margin-top:22px">Operaciones cerradas</h2>
 <table><tr><th>Cuenta</th><th>Lado</th><th>Entrada (Madrid)</th><th>Salida (Madrid)</th><th>Oz</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{trades_html}</table>
+</section>
+<section class="view" id="v-spx">
+<div class="top"><div><h1>Paper trading · S&amp;P 500 (Vantage, CFD SP500.r) · 1000 € por estrategia</h1>
+<div class="muted">Dinero ficticio · velas diarias del índice (Yahoo ^GSPC; sesión de 15:30 a 22:00 en Madrid) · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b></div></div>
+<div class="total">Total: <b>{tot_s:,.2f} €</b> <span class="{"up" if tot_s >= tot0_s else "dn"}">({((tot_s / tot0_s - 1) * 100) if tot0_s else 0:+.2f} %)</span> <span class="muted">de {tot0_s:,.0f} €</span></div></div>
+<div class="warn">Simulación con dinero ficticio. Repite cada vez el backtest exacto del laboratorio sobre las sesiones ya cerradas.
+Señal al cierre de la sesión (22:00 en Madrid) y entrada o salida a la apertura de la siguiente (15:30). Esta cuenta no forma parte del experimento de agentes.</div>
+<h2>Comparativa</h2>
+{summary_table(s, fx, spx) if spx else ""}
+<h2 style="margin-top:22px">Detalle por cuenta</h2>
+<div class="grid">{"".join(idx_cards)}</div>
+<h2 style="margin-top:22px">Operaciones cerradas</h2>
+<table><tr><th>Cuenta</th><th>Lado</th><th>Entrada (Madrid)</th><th>Salida (Madrid)</th><th>Lotes</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{idx_trades}</table>
+</section>
+<script>(function(){{function show(){{var v=(location.hash||'#oro').slice(1);if(!document.getElementById('v-'+v))v='oro';
+document.querySelectorAll('.view').forEach(function(e){{e.style.display=e.id==='v-'+v?'':'none'}});
+document.querySelectorAll('.tabs a').forEach(function(a){{a.classList.toggle('on',a.dataset.v===v)}});}}
+window.addEventListener('hashchange',show);show();}})();</script>
 </body></html>''', encoding="utf-8")
 
 def main():
