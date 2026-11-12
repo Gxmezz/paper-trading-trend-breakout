@@ -36,6 +36,9 @@ jobs:
           PT_DASH: site/index.html
           PT_LOG: run.log
           PT_GOLD_API: ${{ vars.PT_GOLD_API || 'gate' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PT_AGENTS: ${{ vars.PT_AGENTS || 'on' }}
+          PT_AGENT_DAILY_USD: ${{ vars.PT_AGENT_DAILY_USD || '2' }}
           PT_NOTE: "El motor se ejecuta cada minuto en GitHub Actions y esta página se publica cada ~7 min. Si la hora de actualización tiene más de 30 min, revisa la pestaña Actions del repositorio."
         run: bash .github/loop.sh
 

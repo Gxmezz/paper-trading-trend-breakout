@@ -65,6 +65,13 @@ ACCOUNTS = [
               "Order Block con FVG tras ruptura de estructura · entrada al confirmar con cierre · stop tras el OB + 0,2 ATR · "
               "3 parciales a 2R/3R/4R con break even · killzones Londres y NY · sin entradas en noticias · riesgo 2 %, "
               "−5 % diario, 4 pérdidas paran el día. Cuenta de control para el futuro equipo de agentes."),
+    dict(id="gold_smc_agents", name="Oro M15 · SMC agentes (experimento)", tf="15m", fam="SMC_AGENT", risk=0.02,
+         smc=dict(n=3, nh=3, imp=1.5, zone="ob", sweep=0, bias="4h", ltf_align=False, filt="ema", conf="close",
+                  conf_win=4, age=96, sl=0.2, pd=False, sess="kz", exit="R234", news="block", tp=(2, 3, 4)),
+         desc="Los mismos setups SMC que la cuenta mecánica, pero un agente (Claude Opus 5.5) decide si entrar, el stop y los "
+              "objetivos, viendo también los setups que la mecánica descarta. Mismo guardián de riesgo: 2 % por operación, "
+              "−5 % diario, 4 pérdidas paran el día, ratio ≥ 2:1. Sin entradas en ventanas de noticias. Fase 2: la gestión "
+              "de la operación abierta (break even y objetivos) sigue las reglas que fija el agente al entrar."),
 ]
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 GATE = "https://api.gateio.ws/api/v4/futures/usdt"
@@ -312,6 +319,7 @@ def build_indicators(acc, bars, htf_bars):
 
 def process(acc, st, fx):
     if acc["fam"] == "SMC": return process_smc(acc, st, fx)
+    if acc["fam"] == "SMC_AGENT": return process_smc_agent(acc, st, fx)
     t = now_utc(); nowms = time.time() * 1000
     st["status"] = "abierto" if gold_open(t) else "cerrado"
     tfms = TF_MS[acc["tf"]]
@@ -484,6 +492,169 @@ def process_smc(acc, st, fx):
         st["curve"].append([int(nowms), round(st["equity"], 2)])
         if len(st["curve"]) > 6000: st["curve"] = st["curve"][::2]
 
+# ---------- cuenta SMC de agentes (fase 2: agente de entrada) ----------
+ACC_STATES = {}
+NON_FILTERS = ("posición abierta", "fin de datos")   # motivos de descarte que dependen de la gemela, no del setup
+
+def _bars_table(df, n):
+    x = df.tail(n)
+    return [[t.strftime("%m-%d %H:%M"), round(r.Open, 2), round(r.High, 2), round(r.Low, 2), round(r.Close, 2)]
+            for t, r in x.iterrows()]
+
+def agent_context(df, pre, sig, fails, st, E, price):
+    import pandas as pd
+    h1 = df.resample("1h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
+    h4 = df.resample("4h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
+    e200 = h1.Close.ewm(span=200, adjust=False).mean().iloc[-1]
+    s9, s21 = h1.Close.rolling(9).mean().iloc[-1], h1.Close.rolling(21).mean().iloc[-1]
+    t = df.index[-1] + pd.Timedelta(minutes=15)
+    eq = st["eq_usd"] / E
+    last = [dict(lado=x["side"], R=x["R"], motivo=x["reason"], salida=iso_madrid(x["exit_time"])) for x in st["trades"][:5]]
+    return dict(
+        setup=dict(lado="LARGO" if sig["side"] == 1 else "CORTO", zona=[round(sig["zone_lo"], 2), round(sig["zone_hi"], 2)],
+                   stop_mecanico=round(sig["stop"], 2), cierre=round(sig["close"], 2), atr_m15=round(sig["atr"], 2),
+                   filtros_que_fallan=fails, la_gemela_lo_opera=not fails,
+                   objetivos_gemela_R=[2, 3, 4]),
+        contexto=dict(hora_utc=t.strftime("%Y-%m-%d %H:%M"), hora_madrid=t.tz_convert(MAD).strftime("%H:%M"),
+                      hora_nueva_york=t.tz_convert(NY).strftime("%H:%M %a"),
+                      sesgo_estructura_H4={1: "alcista", -1: "bajista"}.get(int(pre["bias"][-1]), "neutral"),
+                      ema200_H1=round(float(e200), 2), sma9_H1=round(float(s9), 2), sma21_H1=round(float(s21), 2),
+                      precio_ahora=round(float(price), 2)),
+        velas=dict(M15_ultimas_48=_bars_table(df, 48), H1_ultimas_48=_bars_table(h1, 48), H4_ultimas_30=_bars_table(h4, 30),
+                   formato="[fecha UTC, apertura, máximo, mínimo, cierre]"),
+        cuenta=dict(capital_eur=round(eq, 2), resultado_hoy_pct=round((st["eq_usd"] / st["day_start"] - 1) * 100, 2),
+                    perdidas_hoy=st["day_losses"], ultimas_operaciones=last),
+    )
+
+def process_smc_agent(acc, st, fx):
+    import pandas as pd
+    if str(HERE / "strategy") not in sys.path: sys.path.insert(0, str(HERE / "strategy"))
+    import smc, risk_guard, agents
+    t = now_utc(); tfms = TF_MS[acc["tf"]]; E = smc.EURUSD; p = acc["smc"]
+    st["status"] = "abierto" if gold_open(t) else "cerrado"
+    store = (ACC_STATES.get("gold_smc_mec") or {}).get("bars") or []
+    if not store: return
+    if st.get("start_ms") is None:
+        st.update(start_ms=store[-1][0] + tfms, last_bar=store[-1][0], last_setup=None, eq_usd=CAPITAL_EUR * E,
+                  day=None, day_start=CAPITAL_EUR * E, day_losses=0, parts=[], be=True, be_done=False, entry=0.0,
+                  risk_usd=0.0, trade_pnl=0.0, t_open=None, pend=None, decisions=[], spend={})
+        event(st, "Arranque: cuenta de 1000 € lista. El agente decide desde el próximo setup SMC.")
+    if gold_open(t):
+        try: st["price"] = last_price()
+        except Exception: pass
+    st["price"] = st.get("price") or store[-1][4]
+
+    def close_trade(px, when, reason):
+        pos = st["pos"]
+        for q, _ in st["parts"]:
+            pnl = pos * q * (px - pos * COST_SIDE - st["entry"]); st["eq_usd"] += pnl; st["trade_pnl"] += pnl
+        tp = st["trade_pnl"]
+        if tp <= 0: st["day_losses"] += 1
+        st["trades"].insert(0, dict(side="LARGO" if pos == 1 else "CORTO", entry_time=st["t_open"], exit_time=when, units=1,
+                                    qty=st["qty"], avg_entry=round(st["entry"], 2), exit=round(px, 2), pnl=round(tp / E, 2),
+                                    R=round(tp / st["risk_usd"], 2) if st["risk_usd"] else 0.0, reason=reason))
+        event(st, f"CIERRE {'largo' if pos == 1 else 'corto'} a {px:,.2f} ({reason}) · {tp / E:+,.2f} €")
+        st.update(pos=0, parts=[], units=[], stop=None, trade_pnl=0.0, be_done=False)
+
+    # 1) velas nuevas: entrada pendiente, swap, stop y objetivos (igual que el backtest)
+    for bt, O, H, L, C in store:
+        if bt <= st["last_bar"] or bt < st["start_ms"]: continue
+        when = ms_to_dt(bt).isoformat()
+        dday = ms_to_dt(bt) - timedelta(hours=22)
+        if dday.date().isoformat() != st["day"]:
+            if st["day"] is not None and st["pos"] == 1:
+                sw = sum(q for q, _ in st["parts"]) * O * SWAP_LONG / 365 * (3 if dday.weekday() == 2 else 1)
+                st["eq_usd"] -= sw; st["trade_pnl"] -= sw; st["swaps_paid"] += sw / E
+            st["day"] = dday.date().isoformat(); st["day_start"] = st["eq_usd"]; st["day_losses"] = 0
+        pend = st.get("pend")
+        if pend and not st["pos"]:
+            st["pend"] = None; d = pend["side"]; px = O + d * COST_SIDE; dist = (px - pend["stop"]) * d
+            rr = [(tg - px) * d / dist for tg in pend["targets"]] if dist > 0 else []
+            if dist <= 0 or not rr or min(rr) <= 0: q, why = 0.0, "stop u objetivo al lado incorrecto tras la apertura"
+            else:
+                q, why = risk_guard.size_entry(st["eq_usd"], st["day_start"], st["day_losses"], px, dist, risk=acc["risk"],
+                                               max_risk=acc["risk"], targets_r=rr)
+            rec = next((x for x in st["decisions"] if x.get("id") == pend["id"]), None)
+            if q >= 1:
+                tg = pend["targets"]; n = int(min(len(tg), q)); base = q // n; rest = q - base * n
+                sel = {1: [len(tg) // 2], 2: [0, len(tg) - 1]}.get(n, list(range(len(tg))))
+                st["parts"] = [[base + (1 if k < rest else 0), tg[ti]] for k, ti in enumerate(sel)]
+                st.update(pos=d, entry=px, stop=pend["stop"], be=pend["be"], be_done=False, risk_usd=q * dist, qty=q,
+                          t_open=when, trade_pnl=0.0)
+                st["costs_paid"] += q * COST_SIDE * 2 / E
+                event(st, f"{'COMPRA' if d == 1 else 'VENTA'} (agente): {q:g} oz a {px:,.2f} · stop {pend['stop']:,.2f} · "
+                          f"objetivos {', '.join(f'{x:,.2f}' for _, x in st['parts'])} · riesgo {q * dist / E:,.0f} €")
+                if rec: rec["resultado"] = f"operado: {q:g} oz a {px:,.2f}"
+            else:
+                event(st, f"Entrada del agente rechazada por el guardián: {why}")
+                if rec: rec["resultado"] = f"rechazado por el guardián: {why}"
+        if st["pos"]:
+            d = st["pos"]
+            if (L <= st["stop"]) if d == 1 else (H >= st["stop"]):
+                close_trade(min(O, st["stop"]) if d == 1 else max(O, st["stop"]), when, "BE" if st["be_done"] else "stop")
+            else:
+                keep = []
+                for q, tg in st["parts"]:
+                    if (d == 1 and H >= tg) or (d == -1 and L <= tg):
+                        pnl = d * q * (tg - d * COST_SIDE - st["entry"]); st["eq_usd"] += pnl; st["trade_pnl"] += pnl
+                        event(st, f"Objetivo {tg:,.2f} alcanzado ({q:g} oz)")
+                        if st["be"] and not st["be_done"]: st["stop"] = st["entry"]; st["be_done"] = True
+                    else: keep.append([q, tg])
+                st["parts"] = keep
+                if not keep: close_trade(C, when, "objetivos")   # sin partes abiertas: solo registra la operación
+        st["last_bar"] = bt
+
+    # 2) setups confirmados en la última vela cerrada -> el agente decide
+    df = pd.DataFrame(store, columns=["t", "Open", "High", "Low", "Close"])
+    df.index = pd.to_datetime(df.pop("t"), unit="ms", utc=True)
+    i0 = int(df.index.searchsorted(pd.Timestamp(st["start_ms"], unit="ms", tz="UTC")))
+    if i0 < len(df):
+        pre = smc.prepare(df, p); sg = []
+        smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=acc["risk"], signals_out=sg)
+        last_t = df.index[-1]; today = t.date().isoformat()
+        for x in sg:
+            if st["last_setup"] and x["time"].isoformat() <= st["last_setup"]: continue
+            st["last_setup"] = x["time"].isoformat()
+            res = x["result"]
+            fails = [] if res in ("operado", "pendiente") else [f for f in res.split(": ", 1)[-1].split(", ") if f not in NON_FILTERS]
+            rec = dict(id=f"{x['time'].isoformat()}{x['side']}", time=x["time"].isoformat(), side="LARGO" if x["side"] == 1 else "CORTO",
+                       zone=[round(x["zone_lo"], 2), round(x["zone_hi"], 2)], stop_mec=round(x["stop"], 2),
+                       gemela="opera" if not fails else "descarta: " + ", ".join(fails))
+            if x["time"] != last_t: rec["agente"] = "no evaluado: setup antiguo (retraso del motor)"
+            elif "noticia" in fails: rec["agente"] = "bloqueado: ventana de noticias"
+            elif st["pos"] or st.get("pend"): rec["agente"] = "no evaluado: ya hay una posición abierta"
+            elif st["day_losses"] >= 4: rec["agente"] = "no evaluado: día parado (4 pérdidas)"
+            else:
+                ctx = agent_context(df, pre, x, fails, st, E, st["price"])
+                r = agents.decide_entry(ctx, st["spend"].get(today, 0.0))
+                st["spend"][today] = round(st["spend"].get(today, 0.0) + r["cost"], 4)
+                rec.update(agente=r["decision"] if not r["error"] else f"error: {r['error']}", stop=r.get("stop"),
+                           targets=r.get("targets"), be=r.get("break_even"), conf=r.get("confidence"),
+                           reason=r.get("reason", ""), cost=round(r["cost"], 4), model=r["model"], ms=r.get("ms"))
+                d = x["side"]
+                if not r["error"] and r["decision"] == "entrar":
+                    tg = sorted(r["targets"], reverse=(d == -1))[:3]
+                    if r["stop"] and ((r["stop"] < x["close"]) if d == 1 else (r["stop"] > x["close"])) and tg:
+                        st["pend"] = dict(side=d, stop=float(r["stop"]), targets=[float(v) for v in tg],
+                                          be=bool(r["break_even"]), id=rec["id"])
+                        rec["resultado"] = "pendiente de la apertura de la siguiente vela"
+                    else: rec["resultado"] = "rechazado: stop u objetivos al lado incorrecto"
+                event(st, f"Setup {rec['side'].lower()} · agente: {rec['agente']} · {r['cost']:.3f} $")
+            st["decisions"].insert(0, rec)
+        del st["decisions"][200:]
+    # 3) capital y curva
+    st["units"] = [[q, st["entry"], st["t_open"]] for q, _ in st["parts"]] if st["pos"] else []
+    st["cash"] = st["eq_usd"] / E
+    st["equity"] = st["cash"] + (sum(st["pos"] * q * (st["price"] - st["entry"]) for q, _ in st["parts"]) / E if st["pos"] else 0.0)
+    st["peak"] = max(st["peak"], st["equity"]); st["max_dd"] = min(st["max_dd"], st["equity"] / st["peak"] - 1)
+    st["setups_total"] = len(st["decisions"]); st["setups_taken"] = sum(1 for x in st["decisions"] if str(x.get("resultado", "")).startswith("operado"))
+    st["ind"] = dict(spend_today=st["spend"].get(t.date().isoformat(), 0.0), spend_total=round(sum(st["spend"].values()), 4),
+                     targets=[tg for _, tg in st["parts"]] if st["pos"] else [], cap=agents.DAILY_CAP_USD)
+    nowms = time.time() * 1000
+    if not st["curve"] or nowms - st["curve"][-1][0] >= 5 * 60_000:
+        st["curve"].append([int(nowms), round(st["equity"], 2)])
+        if len(st["curve"]) > 6000: st["curve"] = st["curve"][::2]
+
 # ---------- dashboard ----------
 def spark(curve, w=520, h=120):
     if len(curve) < 2:
@@ -532,6 +703,14 @@ def smc_section(s):
     start = mec.get("start_ms"); days = (time.time() * 1000 - start) / 86_400_000 if start else 0
     prog = (f'Progreso hacia la evaluación: <b>{a["n"]}</b> de {SMC_EVAL_TRADES} operaciones · <b>{days:.0f}</b> de {SMC_EVAL_DAYS} días '
             f'(lo que llegue antes). Criterio fijado: la cuenta de agentes debe ganar a la mecánica y a entradas al azar con la misma gestión.')
+    if ag:
+        body += (f'<tr><td>Gasto de la API (hoy / total)</td><td class="muted">—</td>'
+                 f'<td>{ag.get("ind", {}).get("spend_today", 0):.2f} $ / {ag.get("ind", {}).get("spend_total", 0):.2f} $</td></tr>')
+    decs = (ag or {}).get("decisions", [])[:15]
+    drows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["side"]}</td><td class="muted">{html.escape(x["gemela"])}</td>'
+                    f'<td>{html.escape(str(x.get("agente", "")))}</td><td>{html.escape(str(x.get("resultado", "")))}</td>'
+                    f'<td class="muted">{html.escape(str(x.get("reason", "")))}</td><td>{x.get("cost", 0) or 0:.3f} $</td></tr>'
+                    for x in decs) or '<tr><td colspan="7" class="muted">El agente aún no ha evaluado ningún setup</td></tr>'
     setups = mec.get("setups", [])[:15]
     srows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["side"]}</td><td>{fmt(x["zone"][0])} – {fmt(x["zone"][1])}</td>'
                     f'<td>{fmt(x["stop"])}</td><td class="{"up" if x["result"] == "operado" else "muted"}">{html.escape(x["result"])}</td></tr>'
@@ -542,7 +721,9 @@ def smc_section(s):
 <div class="tablewrap"><table class="summary"><tr><th></th><th>SMC mecánica (control)</th><th>SMC agentes</th></tr>{body}</table></div>
 <div class="sub" style="margin-top:6px">{prog}</div>
 <details style="margin-top:8px"><summary>Registro de setups detectados (últimos 15, hora de Madrid)</summary>
-<table><tr><th>Vela</th><th>Lado</th><th>Zona</th><th>Stop</th><th>Decisión</th></tr>{srows}</table></details>'''
+<table><tr><th>Vela</th><th>Lado</th><th>Zona</th><th>Stop</th><th>Decisión</th></tr>{srows}</table></details>
+<details style="margin-top:8px" open><summary>Decisiones del agente (últimas 15, hora de Madrid)</summary>
+<div class="tablewrap"><table><tr><th>Vela</th><th>Lado</th><th>Gemela</th><th>Agente</th><th>Resultado</th><th>Motivo del agente</th><th>Coste</th></tr>{drows}</table></div></details>'''
 
 def summary_table(s, fx):
     rows = []
@@ -661,6 +842,10 @@ def render(s):
         if acc["fam"] in ("BO", "BOH"):
             trig = (f'Compra si cierra &gt; <b>{fmt(ind.get("don_hi"))}</b>'
                     + (f' · venta si cierra &lt; <b>{fmt(ind.get("don_lo"))}</b>' if acc["shorts"] else ""))
+        elif acc["fam"] == "SMC_AGENT":
+            trig = (f'Setups evaluados: <b>{st.get("setups_total", 0)}</b> · operados: <b>{st.get("setups_taken", 0)}</b> · '
+                    f'gasto de la API hoy <b>{ind.get("spend_today", 0):.2f} $</b> (tope {ind.get("cap", 0):.2f} $) · total <b>{ind.get("spend_total", 0):.2f} $</b>'
+                    + (f' · objetivos: {", ".join(fmt(x) for x in ind.get("targets", []))}' if ind.get("targets") else ""))
         elif acc["fam"] == "SMC":
             trig = (f'Sesgo H4: <b>{ind.get("bias", "—")}</b> · EMA 200 H1: <b>{ind.get("ema", "—")}</b> · zonas vivas: <b>{ind.get("zones", "—")}</b>'
                     + (f' · objetivos: {", ".join(fmt(x) for x in ind.get("targets", []))}' if ind.get("targets") else ""))
@@ -750,6 +935,7 @@ def main():
     while True:
         s["fx"] = eurusd(s.get("fx"))
         update_offset(s)
+        ACC_STATES.clear(); ACC_STATES.update(s["accounts"])   # la cuenta de agentes lee las velas de la gemela
         for acc in ACCOUNTS:
             try:
                 process(acc, s["accounts"][acc["id"]], s["fx"])
