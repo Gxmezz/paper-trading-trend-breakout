@@ -22,6 +22,8 @@ dashboard en GitHub Pages cada ~7 minutos.
 
 Cada setup SMC confirmado queda registrado (vela, lado, zona, stop y decisión: operado, descartado por qué filtro o rechazado por el guardián) en el estado publicado y en la sección *Experimento SMC* del dashboard, junto con la comparativa de las dos cuentas y el progreso hacia la evaluación (100 operaciones o 3 meses).
 
+**Fase 5 (riesgo e informe):** una vez por día de negociación, Claude Opus 5.5 revisa la cuenta de agentes (racha, caída, operaciones frente a la gemela, noticias) y fija el modo de riesgo del día: normal, reducido (×0,25-0,75) o pausa de entradas. Nunca puede subir del 2 %. Cada viernes al cierre se genera un informe semanal (estadísticas de las dos cuentas, coincidencias de entradas, gestión, riesgo y gasto, con un resumen redactado) que aparece en el dashboard. `python tools/informe_a_cerebro.py` lo copia al vault de Obsidian.
+
 **Fase 4 (noticias):** `news.py` lee el calendario económico de EE. UU. (ForexFactory) y titulares (FXStreet y Google News). Cada hora, con el mercado abierto, Claude Haiku 5.5 resume el sentimiento para el oro. Los agentes reciben el sentimiento, los eventos próximos y los titulares como datos de terceros, y la cuenta de agentes no abre operaciones de 15 min antes a 30 min después de un evento de impacto alto. Tope de gasto de la API: 3 $/día por defecto.
 
 **Fase 3 (gestor):** al cierre de cada vela M15 con una operación abierta, Claude Sonnet 5.5 revisa la posición (R actual, máximo y mínimo en R, velas, noticias próximas) y puede mantener, acercar el stop, poner break even, mover objetivos o cerrar todo o una parte en la siguiente vela. El guardián rechaza cualquier stop que se aleje. Cada revisión queda en la tabla *Gestión de operaciones abiertas*.

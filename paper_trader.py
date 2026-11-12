@@ -72,7 +72,8 @@ ACCOUNTS = [
               "objetivos, viendo también los setups que la mecánica descarta. Mismo guardián de riesgo: 2 % por operación, "
               "−5 % diario, 4 pérdidas paran el día, ratio ≥ 2:1. Sin entradas en ventanas de noticias. Fase 3: un agente gestor "
               "(Claude Sonnet 5.5) revisa la operación abierta al cierre de cada vela M15 y puede acercar el stop, poner break even, "
-              "mover objetivos o cerrar (todo o una parte)."),
+              "mover objetivos o cerrar (todo o una parte). Fase 4: noticias y sentimiento. Fase 5: un agente de riesgo "
+              "(Opus 5.5) revisa la cuenta cada día y puede reducir el riesgo o pausar las entradas, nunca aumentarlo."),
 ]
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 GATE = "https://api.gateio.ws/api/v4/futures/usdt"
@@ -545,6 +546,34 @@ def _blocking(bar_t):
     except Exception:
         return None
 
+def _streak(trades):
+    n = 0
+    for x in trades:
+        if x["pnl"] <= 0: n += 1
+        else: break
+    return n
+
+def risk_context(st, t):
+    twin = ACC_STATES.get("gold_smc_mec") or {}
+    wk = (t - timedelta(days=7)).isoformat()
+    tw = [x for x in st["trades"] if x["exit_time"] >= wk]; tm = [x for x in twin.get("trades", []) if x["exit_time"] >= wk]
+    decs = [x for x in st.get("decisions", []) if x["time"] >= wk]
+    return dict(
+        dia_que_empieza=st.get("day"),
+        cuenta_agentes=dict(capital_eur=round(st.get("equity", CAPITAL_EUR), 2), caida_maxima_pct=round(st.get("max_dd", 0) * 100, 2),
+                            caida_desde_maximo_pct=round((st.get("equity", CAPITAL_EUR) / st.get("peak", CAPITAL_EUR) - 1) * 100, 2),
+                            perdidas_seguidas=_streak(st["trades"]), operaciones_7_dias=len(tw),
+                            resultado_7_dias_eur=round(sum(x["pnl"] for x in tw), 2),
+                            ultimas_operaciones_R=[x["R"] for x in st["trades"][:10]],
+                            setups_evaluados_7_dias=len(decs),
+                            entradas_7_dias=sum(1 for x in decs if x.get("agente") == "entrar"),
+                            rechazos_del_guardian_7_dias=sum(1 for x in decs if "guardián" in str(x.get("resultado", ""))),
+                            modo_de_riesgo_anterior=st.get("risk_mode", "normal")),
+        gemela=dict(capital_eur=round(twin.get("equity", CAPITAL_EUR), 2), operaciones_7_dias=len(tm),
+                    resultado_7_dias_eur=round(sum(x["pnl"] for x in tm), 2)),
+        noticias=_news_block(t, 24),
+    )
+
 def mgmt_context(df, st, C):
     import pandas as pd
     h1 = df.resample("1h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
@@ -612,8 +641,9 @@ def process_smc_agent(acc, st, fx):
             rr = [(tg - px) * d / dist for tg in pend["targets"]] if dist > 0 else []
             if dist <= 0 or not rr or min(rr) <= 0: q, why = 0.0, "stop u objetivo al lado incorrecto tras la apertura"
             else:
-                q, why = risk_guard.size_entry(st["eq_usd"], st["day_start"], st["day_losses"], px, dist, risk=acc["risk"],
-                                               max_risk=acc["risk"], targets_r=rr)
+                rk = min(acc["risk"], pend.get("risk", acc["risk"]))      # el agente de riesgo solo puede reducirlo
+                q, why = risk_guard.size_entry(st["eq_usd"], st["day_start"], st["day_losses"], px, dist, risk=rk,
+                                               max_risk=rk, targets_r=rr)
             rec = next((x for x in st["decisions"] if x.get("id") == pend["id"]), None)
             if q >= 1:
                 tg = pend["targets"]; n = int(min(len(tg), q)); base = q // n; rest = q - base * n
@@ -659,6 +689,23 @@ def process_smc_agent(acc, st, fx):
                 if not keep: close_trade(C, when, "objetivos")   # sin partes abiertas: solo registra la operación
         st["last_bar"] = bt
 
+    # 1b) fase 5: el agente de riesgo revisa la cuenta una vez por día de negociación (con datos recién cerrados)
+    fresh_now = time.time() * 1000 - (store[-1][0] + tfms) < 20 * 60_000
+    if st.get("day") and st.get("risk_day") != st["day"] and fresh_now:
+        st["risk_day"] = st["day"]; today = t.date().isoformat()
+        r = agents.decide_risk(risk_context(st, t), st["spend"].get(today, 0.0))
+        st["spend"][today] = round(st["spend"].get(today, 0.0) + r["cost"], 4)
+        mode = r["modo"] if not r["error"] else "normal"
+        mult = 1.0 if mode != "reducido" else min(0.75, max(0.25, float(r["multiplicador"])))
+        st["risk_mode"], st["risk_mult"] = mode, mult
+        st.setdefault("risk_log", []).insert(0, dict(day=st["day"], modo=mode, mult=mult, reason=r.get("reason", ""),
+                                                     error=r["error"], cost=round(r["cost"], 4), model=r["model"]))
+        del st["risk_log"][120:]
+        event(st, f"Agente de riesgo ({st['day']}): {mode}" + (f" ×{mult:g}" if mode == "reducido" else "")
+                  + (f" · error: {r['error']}" if r["error"] else ""))
+    paused = st.get("risk_mode") == "pausa" and st.get("risk_day") == st.get("day")
+    rmult = st.get("risk_mult", 1.0) if st.get("risk_day") == st.get("day") else 1.0
+
     # 2) setups confirmados en la última vela cerrada -> el agente decide
     df = pd.DataFrame(store, columns=["t", "Open", "High", "Low", "Close"])
     df.index = pd.to_datetime(df.pop("t"), unit="ms", utc=True)
@@ -680,6 +727,7 @@ def process_smc_agent(acc, st, fx):
             elif _blocking(x["time"]): rec["agente"] = f"bloqueado: evento de alto impacto ({_blocking(x['time'])})"
             elif st["pos"] or st.get("pend"): rec["agente"] = "no evaluado: ya hay una posición abierta"
             elif st["day_losses"] >= 4: rec["agente"] = "no evaluado: día parado (4 pérdidas)"
+            elif paused: rec["agente"] = "no evaluado: pausa del agente de riesgo"
             else:
                 ctx = agent_context(df, pre, x, fails, st, E, st["price"])
                 r = agents.decide_entry(ctx, st["spend"].get(today, 0.0))
@@ -692,7 +740,7 @@ def process_smc_agent(acc, st, fx):
                     tg = sorted(r["targets"], reverse=(d == -1))[:3]
                     if r["stop"] and ((r["stop"] < x["close"]) if d == 1 else (r["stop"] > x["close"])) and tg:
                         st["pend"] = dict(side=d, stop=float(r["stop"]), targets=[float(v) for v in tg],
-                                          be=bool(r["break_even"]), id=rec["id"])
+                                          be=bool(r["break_even"]), id=rec["id"], risk=acc["risk"] * rmult)
                         rec["resultado"] = "pendiente de la apertura de la siguiente vela"
                     else: rec["resultado"] = "rechazado: stop u objetivos al lado incorrecto"
                 event(st, f"Setup {rec['side'].lower()} · agente: {rec['agente']} · {r['cost']:.3f} $")
@@ -764,6 +812,62 @@ def acc_color(i): return SERIES_COLORS[i % len(SERIES_COLORS)]
 SMC_EVAL_TRADES = 100   # criterio fijado: evaluar el experimento con >= 100 operaciones o 3 meses
 SMC_EVAL_DAYS = 91
 
+def _acc_summary(tr):
+    n = len(tr); w = [x for x in tr if x["pnl"] > 0]
+    gp = sum(x["pnl"] for x in w); gl = -sum(x["pnl"] for x in tr if x["pnl"] <= 0)
+    return dict(operaciones=n, acierto_pct=round(len(w) / n * 100) if n else None,
+                PF=round(gp / gl, 2) if gl > 0 else None, R_medio=round(sum(x["R"] for x in tr) / n, 2) if n else None,
+                resultado_eur=round(sum(x["pnl"] for x in tr), 2))
+
+def weekly_stats(s, start, end):
+    mec = s["accounts"].get("gold_smc_mec", {}); ag = s["accounts"].get("gold_smc_agents", {})
+    inw = lambda x, k: start <= x[k] < end
+    decs = [x for x in ag.get("decisions", []) if inw(x, "time")]
+    m = dict(ambos_entran=0, solo_agente=0, solo_gemela=0, ninguno=0)
+    for x in decs:
+        a = x.get("agente") == "entrar"; g = x.get("gemela") == "opera"
+        m["ambos_entran" if a and g else "solo_agente" if a else "solo_gemela" if g else "ninguno"] += 1
+    mg = [x for x in ag.get("mgmt", []) if inw(x, "time")]
+    spend = {k: v for k, v in ag.get("spend", {}).items() if start[:10] <= k < end[:10]}
+    return dict(
+        semana=f"{start[:10]} a {end[:10]}",
+        gemela_semana=_acc_summary([x for x in mec.get("trades", []) if inw(x, "exit_time")]),
+        agentes_semana=_acc_summary([x for x in ag.get("trades", []) if inw(x, "exit_time")]),
+        gemela_total=dict(**_acc_summary(mec.get("trades", [])), capital_eur=round(mec.get("equity", CAPITAL_EUR), 2),
+                          caida_max_pct=round(mec.get("max_dd", 0) * 100, 2)),
+        agentes_total=dict(**_acc_summary(ag.get("trades", [])), capital_eur=round(ag.get("equity", CAPITAL_EUR), 2),
+                           caida_max_pct=round(ag.get("max_dd", 0) * 100, 2)),
+        setups_semana=len(decs), coincidencia_entradas=m,
+        errores_agente=sum(1 for x in decs if str(x.get("agente", "")).startswith("error")),
+        rechazos_guardian=sum(1 for x in decs if "guardián" in str(x.get("resultado", ""))),
+        gestion=dict(revisiones=len(mg), acciones={k: sum(1 for x in mg if x["accion"] == k) for k in
+                                                   ("mover_stop", "break_even", "cambiar_objetivos", "cerrar_parcial", "cerrar")}),
+        riesgo=[dict(dia=x["day"], modo=x["modo"], mult=x["mult"]) for x in ag.get("risk_log", []) if start[:10] <= x["day"] < end[:10]],
+        gasto_api_semana_usd=round(sum(spend.values()), 3), gasto_api_total_usd=round(sum(ag.get("spend", {}).values()), 3),
+        progreso=dict(operaciones_agentes=len(ag.get("trades", [])), objetivo_operaciones=SMC_EVAL_TRADES,
+                      dias=round((time.time() * 1000 - (mec.get("start_ms") or time.time() * 1000)) / 86_400_000), objetivo_dias=SMC_EVAL_DAYS),
+    )
+
+def maybe_weekly_report(s):
+    """Con el mercado cerrado por fin de semana, un informe por semana (de domingo 22:00 a viernes 22:00 UTC)."""
+    t = now_utc()
+    if gold_open(t) or t.weekday() not in (4, 5, 6): return
+    fri = (t - timedelta(days=(t.weekday() - 4))).date()
+    key = fri.isoformat()
+    if s.get("last_report") == key or "gold_smc_agents" not in s["accounts"]: return
+    s["last_report"] = key
+    end = datetime(fri.year, fri.month, fri.day, 22, tzinfo=timezone.utc); start = end - timedelta(days=7)
+    stats = weekly_stats(s, start.isoformat(), end.isoformat())
+    import agents
+    ag = s["accounts"]["gold_smc_agents"]; today = t.date().isoformat()
+    r = agents.write_report(stats, ag.get("spend", {}).get(today, 0.0))
+    ag.setdefault("spend", {})[today] = round(ag["spend"].get(today, 0.0) + r["cost"], 4)
+    s.setdefault("reports", []).insert(0, dict(week=key, stats=stats, resumen=r.get("resumen", ""), alertas=r.get("alertas", []),
+                                               conclusion=r.get("conclusion_provisional", ""), error=r["error"],
+                                               cost=round(r["cost"], 4), created=t.isoformat()))
+    del s["reports"][12:]
+    log(f"Informe semanal {key} generado" + (f" (error del redactor: {r['error']})" if r["error"] else ""))
+
 def smc_stats(st):
     tr = st.get("trades", []); n = len(tr); wins = [x for x in tr if x["pnl"] > 0]
     gp = sum(x["pnl"] for x in wins); gl = -sum(x["pnl"] for x in tr if x["pnl"] <= 0)
@@ -806,6 +910,24 @@ def smc_section(s):
                  f'{html.escape(sent.get("resumen", ""))} <span class="muted">({iso_madrid(sent["at"]) if sent.get("at") else "—"})</span><br>'
                  f'Próximos eventos de impacto alto de EE. UU. (sin entradas de los agentes de −15 a +30 min): '
                  + (", ".join(f'{html.escape(e["title"])} {iso_madrid(e["time"])}' for e in evs) or "ninguno esta semana") + '</div>')
+    rl = (ag or {}).get("risk_log", [])
+    risk_html = ""
+    if rl:
+        x = rl[0]
+        risk_html = (f'<div class="sub" style="margin-top:6px"><b>Agente de riesgo ({html.escape(x["day"])}):</b> modo <b>{html.escape(x["modo"])}</b>'
+                     + (f' (riesgo ×{x["mult"]:g} = {2 * x["mult"]:g} % por operación)' if x["modo"] == "reducido" else "")
+                     + f' · {html.escape(x.get("reason", ""))}</div>')
+    reps = s.get("reports", [])
+    def rep_html(r):
+        st_ = r["stats"]; a, g = st_["agentes_semana"], st_["gemela_semana"]
+        al = "".join(f"<li>{html.escape(v)}</li>" for v in r.get("alertas", []))
+        return (f'<p><b>Semana {html.escape(st_["semana"])}</b> · agentes {a["operaciones"]} ops, {a["resultado_eur"]:+.2f} € · '
+                f'gemela {g["operaciones"]} ops, {g["resultado_eur"]:+.2f} € · gasto API {st_["gasto_api_semana_usd"]:.2f} $</p>'
+                f'<p>{html.escape(r.get("resumen", ""))}</p>' + (f"<ul>{al}</ul>" if al else "")
+                + f'<p class="muted">{html.escape(r.get("conclusion", ""))}</p>')
+    report_html = (f'<details style="margin-top:8px" open><summary>Informe semanal (último: {html.escape(reps[0]["week"])})</summary>'
+                   f'{rep_html(reps[0])}' + ("".join(f'<details><summary>{html.escape(r["week"])}</summary>{rep_html(r)}</details>' for r in reps[1:]))
+                   + '</details>') if reps else '<div class="sub" style="margin-top:8px">Informe semanal: se genera cada viernes al cierre del mercado.</div>'
     mg = (ag or {}).get("mgmt", [])[:15]
     mrows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["R"]:+.2f}</td><td>{html.escape(x["accion"])}</td>'
                     f'<td>{html.escape(x["resultado"])}</td><td class="muted">{html.escape(x.get("reason", ""))}</td><td>{x.get("cost", 0):.3f} $</td></tr>'
@@ -819,7 +941,9 @@ def smc_section(s):
 4 pérdidas paran el día, ratio ≥ 2:1, el stop solo puede acercarse). La única diferencia será el juicio de los agentes.</div>
 <div class="tablewrap"><table class="summary"><tr><th></th><th>SMC mecánica (control)</th><th>SMC agentes</th></tr>{body}</table></div>
 <div class="sub" style="margin-top:6px">{prog}</div>
+{risk_html}
 {news_html}
+{report_html}
 <details style="margin-top:8px"><summary>Registro de setups detectados (últimos 15, hora de Madrid)</summary>
 <table><tr><th>Vela</th><th>Lado</th><th>Zona</th><th>Stop</th><th>Decisión</th></tr>{srows}</table></details>
 <details style="margin-top:8px" open><summary>Decisiones del agente (últimas 15, hora de Madrid)</summary>
@@ -1051,6 +1175,8 @@ def main():
             except Exception as ex:
                 log(f"[{acc['id']}] error: {ex!r}")
                 if once: traceback.print_exc()
+        try: maybe_weekly_report(s)
+        except Exception as ex: log(f"informe semanal: error {ex!r}")
         s["updated"] = now_utc().isoformat()
         save_state(s); render(s)
         if once: break

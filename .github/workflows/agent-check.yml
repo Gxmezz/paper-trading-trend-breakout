@@ -30,3 +30,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: pip install requests && python news.py
+      - name: Prueba del agente de riesgo (Opus 5.5, ~0,01-0,03 $)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agents.py --selftest-risk
