@@ -26,3 +26,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python agents.py --selftest-manage
+      - name: Prueba de noticias y sentimiento (Haiku 5.5, < 0,01 $)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: pip install requests && python news.py

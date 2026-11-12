@@ -495,6 +495,7 @@ def process_smc(acc, st, fx):
 
 # ---------- cuenta SMC de agentes (fase 2: agente de entrada) ----------
 ACC_STATES = {}
+NEWS = {}            # fase 4: calendario, titulares y sentimiento (news.py), actualizado en main()
 NON_FILTERS = ("posición abierta", "fin de datos")   # motivos de descarte que dependen de la gemela, no del setup
 
 def _bars_table(df, n):
@@ -525,7 +526,24 @@ def agent_context(df, pre, sig, fails, st, E, price):
                    formato="[fecha UTC, apertura, máximo, mínimo, cierre]"),
         cuenta=dict(capital_eur=round(eq, 2), resultado_hoy_pct=round((st["eq_usd"] / st["day_start"] - 1) * 100, 2),
                     perdidas_hoy=st["day_losses"], ultimas_operaciones=last),
+        noticias=_news_block(t.to_pydatetime(), 24),
     )
+
+def _news_block(t, hours):
+    try:
+        import news as _news
+        return _news.for_agent(NEWS, t, hours)
+    except Exception as ex:
+        return dict(error=f"noticias no disponibles ({ex!r})"[:120])
+
+def _blocking(bar_t):
+    """Evento de impacto alto del calendario alrededor de la entrada (apertura de la vela siguiente)."""
+    try:
+        import news as _news
+        e = _news.blocking_event(NEWS, (bar_t + timedelta(minutes=15)).to_pydatetime())
+        return f"{e['title']} {iso_madrid(e['time'])}" if e else None
+    except Exception:
+        return None
 
 def mgmt_context(df, st, C):
     import pandas as pd
@@ -545,6 +563,7 @@ def mgmt_context(df, st, C):
                       ema200_H1=round(float(h1.Close.ewm(span=200, adjust=False).mean().iloc[-1]), 2)),
         velas=dict(M15_ultimas_32=_bars_table(df, 32), H1_ultimas_24=_bars_table(h1, 24),
                    formato="[fecha UTC, apertura, máximo, mínimo, cierre]"),
+        noticias=_news_block(t.to_pydatetime(), 3),
     )
 
 def process_smc_agent(acc, st, fx):
@@ -658,6 +677,7 @@ def process_smc_agent(acc, st, fx):
                        gemela="opera" if not fails else "descarta: " + ", ".join(fails))
             if x["time"] != last_t: rec["agente"] = "no evaluado: setup antiguo (retraso del motor)"
             elif "noticia" in fails: rec["agente"] = "bloqueado: ventana de noticias"
+            elif _blocking(x["time"]): rec["agente"] = f"bloqueado: evento de alto impacto ({_blocking(x['time'])})"
             elif st["pos"] or st.get("pend"): rec["agente"] = "no evaluado: ya hay una posición abierta"
             elif st["day_losses"] >= 4: rec["agente"] = "no evaluado: día parado (4 pérdidas)"
             else:
@@ -779,6 +799,13 @@ def smc_section(s):
                     f'<td>{html.escape(str(x.get("agente", "")))}</td><td>{html.escape(str(x.get("resultado", "")))}</td>'
                     f'<td class="muted">{html.escape(str(x.get("reason", "")))}</td><td>{x.get("cost", 0) or 0:.3f} $</td></tr>'
                     for x in decs) or '<tr><td colspan="7" class="muted">El agente aún no ha evaluado ningún setup</td></tr>'
+    nw = s.get("news", {}); sent = nw.get("sentiment") or {}
+    evs = [e for e in nw.get("calendar", []) if e["impact"] == "High" and e["time"] >= now_utc().isoformat()][:6]
+    news_html = (f'<div class="sub" style="margin-top:8px"><b>Noticias (fase 4):</b> sentimiento para el oro '
+                 f'<b>{html.escape(sent.get("sesgo_oro", "sin datos"))}</b> (intensidad {sent.get("intensidad", 0):.1f}) · '
+                 f'{html.escape(sent.get("resumen", ""))} <span class="muted">({iso_madrid(sent["at"]) if sent.get("at") else "—"})</span><br>'
+                 f'Próximos eventos de impacto alto de EE. UU. (sin entradas de los agentes de −15 a +30 min): '
+                 + (", ".join(f'{html.escape(e["title"])} {iso_madrid(e["time"])}' for e in evs) or "ninguno esta semana") + '</div>')
     mg = (ag or {}).get("mgmt", [])[:15]
     mrows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["R"]:+.2f}</td><td>{html.escape(x["accion"])}</td>'
                     f'<td>{html.escape(x["resultado"])}</td><td class="muted">{html.escape(x.get("reason", ""))}</td><td>{x.get("cost", 0):.3f} $</td></tr>'
@@ -792,6 +819,7 @@ def smc_section(s):
 4 pérdidas paran el día, ratio ≥ 2:1, el stop solo puede acercarse). La única diferencia será el juicio de los agentes.</div>
 <div class="tablewrap"><table class="summary"><tr><th></th><th>SMC mecánica (control)</th><th>SMC agentes</th></tr>{body}</table></div>
 <div class="sub" style="margin-top:6px">{prog}</div>
+{news_html}
 <details style="margin-top:8px"><summary>Registro de setups detectados (últimos 15, hora de Madrid)</summary>
 <table><tr><th>Vela</th><th>Lado</th><th>Zona</th><th>Stop</th><th>Decisión</th></tr>{srows}</table></details>
 <details style="margin-top:8px" open><summary>Decisiones del agente (últimas 15, hora de Madrid)</summary>
@@ -1010,6 +1038,13 @@ def main():
         s["fx"] = eurusd(s.get("fx"))
         update_offset(s)
         ACC_STATES.clear(); ACC_STATES.update(s["accounts"])   # la cuenta de agentes lee las velas de la gemela
+        try:
+            import news as _news
+            ag_spend = s["accounts"].get("gold_smc_agents", {}).setdefault("spend", {})
+            _news.refresh(s.setdefault("news", {}), ag_spend, gold_open(now_utc()), log=log)
+            NEWS.clear(); NEWS.update(s["news"])
+        except Exception as ex:
+            log(f"noticias: error {ex!r}")
         for acc in ACCOUNTS:
             try:
                 process(acc, s["accounts"][acc["id"]], s["fx"])
