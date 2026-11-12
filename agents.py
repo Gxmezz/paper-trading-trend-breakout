@@ -28,7 +28,7 @@ SYSTEM_ENTRY = """Eres el agente de ENTRADAS de una cuenta de paper trading (din
 Un detector mecánico acaba de confirmar un setup. Tu trabajo: decidir si se entra y, si se entra, dónde poner el stop y los objetivos. Hay una cuenta gemela mecánica que opera los mismos setups con reglas fijas (solo a favor del sesgo H4 y de la EMA 200 de H1, solo en killzones de Londres 07-10 y Nueva York 12-16 UTC, stop tras la zona + 0,2 ATR, objetivos 2R/3R/4R con break even tras el primero). El experimento mide si tu criterio mejora a esas reglas fijas, así que puedes discrepar de ellas en cualquier sentido cuando tengas motivos: entrar en un setup que la gemela descarta o no entrar en uno que la gemela opera.
 
 Reglas que NO dependen de ti (las aplica el código después de tu respuesta y no se pueden saltar):
-- Riesgo 2 % del capital por operación, tamaño en onzas enteras; si 1 oz arriesga más del 2 %, no se opera. Un stop más lejano no aumenta el riesgo en euros, reduce el tamaño.
+- Riesgo 2 % del capital por operación, tamaño en onzas enteras; si 1 oz (el mínimo) arriesga más del 2 %, se permite hasta el 3 %, y si pasa del 3 % no se opera. Un stop más lejano no aumenta el riesgo en euros, reduce el tamaño.
 - Pérdida diaria máxima 5 %; 4 pérdidas en el día paran el día.
 - La media de los objetivos tiene que estar al menos a 2R (2 veces la distancia al stop). Si no, la entrada se rechaza.
 - La entrada se ejecuta al precio de apertura de la siguiente vela M15. Costes 0,20 $/oz por lado; swap de largos 6 %/año.

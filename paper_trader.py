@@ -63,13 +63,13 @@ ACCOUNTS = [
                   conf_win=4, age=96, sl=0.2, pd=False, sess="kz", exit="R234", news="block", tp=(2, 3, 4)),
          desc="SMC del curso, mecánica (strategy/smc.py v2, la mejor de entrenamiento): sesgo de estructura H4 + EMA 200 H1 · "
               "Order Block con FVG tras ruptura de estructura · entrada al confirmar con cierre · stop tras el OB + 0,2 ATR · "
-              "3 parciales a 2R/3R/4R con break even · killzones Londres y NY · sin entradas en noticias · riesgo 2 %, "
-              "−5 % diario, 4 pérdidas paran el día. Cuenta de control para el futuro equipo de agentes."),
+              "3 parciales a 2R/3R/4R con break even · killzones Londres y NY · sin entradas en noticias · riesgo 2 % (con el "
+              "lote mínimo de 1 oz, hasta 3 %), −5 % diario, 4 pérdidas paran el día. Cuenta de control para el futuro equipo de agentes."),
     dict(id="gold_smc_agents", name="Oro M15 · SMC agentes (experimento)", tf="15m", fam="SMC_AGENT", risk=0.02,
          smc=dict(n=3, nh=3, imp=1.5, zone="ob", sweep=0, bias="4h", ltf_align=False, filt="ema", conf="close",
                   conf_win=4, age=96, sl=0.2, pd=False, sess="kz", exit="R234", news="block", tp=(2, 3, 4)),
          desc="Los mismos setups SMC que la cuenta mecánica, pero un agente (Claude Opus 5.5) decide si entrar, el stop y los "
-              "objetivos, viendo también los setups que la mecánica descarta. Mismo guardián de riesgo: 2 % por operación, "
+              "objetivos, viendo también los setups que la mecánica descarta. Mismo guardián de riesgo: 2 % por operación (con 1 oz, hasta 3 %), "
               "−5 % diario, 4 pérdidas paran el día, ratio ≥ 2:1. Sin entradas en ventanas de noticias. Fase 3: un agente gestor "
               "(Claude Sonnet 5.5) revisa la operación abierta al cierre de cada vela M15 y puede acercar el stop, poner break even, "
               "mover objetivos o cerrar (todo o una parte). Fase 4: noticias y sentimiento. Fase 5: un agente de riesgo "
@@ -84,6 +84,8 @@ ACCOUNTS.append(
               "CFD SP500.r de Vantage: 0,1 lote mínimo (= 0,1 × índice $), riesgo 2 % sin forzar el tamaño, −5 % diario, "
               "costes 0,01 % por lado, swap de largos = tipo a 3 meses + 3 % − dividendos."))
 VIEWS = [("oro", "Oro"), ("spx", "S&P 500")]
+SMC_MIN_LOT_RISK = 0.03   # 2026-11-12, decisión de Adrián: si 1 oz (lote mínimo) arriesga más del 2 %, se permite hasta el 3 %
+SMC_RESET = "2026-11-12-minlot3"   # reinicio conjunto de las dos cuentas SMC al cambiar la regla (llevaban 0 operaciones)
 def view_of(acc): return acc.get("view", "oro")
 
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
@@ -255,6 +257,14 @@ def load_state():
         s.setdefault("archived", {})[k] = dict(s["accounts"].pop(k), archived_at=now_utc().isoformat())
         log(f"Cuenta {k} retirada y archivada en el estado")
     s["accounts"] = {a["id"]: s["accounts"].get(a["id"]) or new_account_state() for a in ACCOUNTS}
+    if s.get("smc_reset") != SMC_RESET:      # mismo arranque para gemela y agentes con la regla nueva
+        for k in ("gold_smc_mec", "gold_smc_agents"):
+            if k in s["accounts"]:
+                old = s["accounts"][k]; s["accounts"][k] = new_account_state()
+                if k == "gold_smc_mec" and old.get("bars"): s["accounts"][k]["bars"] = old["bars"]
+                if k == "gold_smc_agents" and old.get("spend"): s["accounts"][k]["spend"] = old["spend"]
+        s["smc_reset"] = SMC_RESET
+        log("Cuentas SMC reiniciadas: lote mínimo permitido hasta el 3 % de riesgo")
     return s
 
 def save_state(s):
@@ -579,7 +589,7 @@ def process_smc(acc, st, fx):
     if i0 >= len(df):
         st["equity"] = CAPITAL_EUR; return
     pre = smc.prepare(df, p); cv, tr, so, sg = [], [], {}, []
-    r = smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=acc["risk"],
+    r = smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=SMC_MIN_LOT_RISK,
                      curve=cv, trades_out=tr, state_out=so, signals_out=sg)
     # registro de decisiones: cada setup SMC confirmado, con lo que se hizo y por qué (también lo usarán los agentes)
     st["setups_total"] = len(sg); st["setups_taken"] = sum(1 for x in sg if x["result"] == "operado")
@@ -610,7 +620,7 @@ def process_smc(acc, st, fx):
     st["pos"] = so["pos"]; st["stop"] = so["stop"] if so["pos"] else None
     st["units"] = [[qq, so["entry"], str(so["t_open"])] for qq, _ in so["parts"]] if so["pos"] else []
     st["cash"] = so["eq"] / E
-    st["equity"] = st["cash"] + (sum(so["pos"] * qq * (st["price"] - so["entry"]) for qq, _ in so["parts"]) / E if so["pos"] else 0.0)
+    st["equity"] = round(st["cash"] + (sum(so["pos"] * qq * (st["price"] - so["entry"]) for qq, _ in so["parts"]) / E if so["pos"] else 0.0), 2)
     curve_eur = [v for v in cv] + [st["equity"]]
     pk = CAPITAL_EUR; dd = 0.0
     for v in curve_eur: pk = max(pk, v); dd = min(dd, v / pk - 1)
@@ -737,7 +747,7 @@ def process_smc_agent(acc, st, fx):
     if st.get("start_ms") is None:
         st.update(start_ms=store[-1][0] + tfms, last_bar=store[-1][0], last_setup=None, eq_usd=CAPITAL_EUR * E,
                   day=None, day_start=CAPITAL_EUR * E, day_losses=0, parts=[], be=True, be_done=False, entry=0.0,
-                  risk_usd=0.0, trade_pnl=0.0, t_open=None, pend=None, decisions=[], spend={})
+                  risk_usd=0.0, trade_pnl=0.0, t_open=None, pend=None, decisions=[], spend=st.get("spend") or {})
         event(st, "Arranque: cuenta de 1000 € lista. El agente decide desde el próximo setup SMC.")
     if gold_open(t):
         try: st["price"] = last_price()
@@ -774,7 +784,7 @@ def process_smc_agent(acc, st, fx):
             else:
                 rk = min(acc["risk"], pend.get("risk", acc["risk"]))      # el agente de riesgo solo puede reducirlo
                 q, why = risk_guard.size_entry(st["eq_usd"], st["day_start"], st["day_losses"], px, dist, risk=rk,
-                                               max_risk=rk, targets_r=rr)
+                                               max_risk=SMC_MIN_LOT_RISK * rk / acc["risk"], targets_r=rr)
             rec = next((x for x in st["decisions"] if x.get("id") == pend["id"]), None)
             if q >= 1:
                 tg = pend["targets"]; n = int(min(len(tg), q)); base = q // n; rest = q - base * n
@@ -843,7 +853,7 @@ def process_smc_agent(acc, st, fx):
     i0 = int(df.index.searchsorted(pd.Timestamp(st["start_ms"], unit="ms", tz="UTC")))
     if i0 < len(df):
         pre = smc.prepare(df, p); sg = []
-        smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=acc["risk"], signals_out=sg)
+        smc.simulate(df, i0, p, pre=pre, cost_side=COST_SIDE, risk=acc["risk"], max_risk=SMC_MIN_LOT_RISK, signals_out=sg)
         last_t = df.index[-1]; today = t.date().isoformat()
         for x in sg:
             if st["last_setup"] and x["time"].isoformat() <= st["last_setup"]: continue
@@ -1068,7 +1078,7 @@ def smc_section(s):
                     f'<td>{fmt(x["stop"])}</td><td class="{"up" if x["result"] == "operado" else "muted"}">{html.escape(x["result"])}</td></tr>'
                     for x in setups) or '<tr><td colspan="5" class="muted">Aún no se ha detectado ningún setup</td></tr>'
     return f'''<h2 style="margin-top:22px">Experimento SMC: agentes frente a mecánica</h2>
-<div class="sub">Las dos cuentas ven los mismos setups SMC y pasan por el mismo guardián de riesgo (2 % por operación, −5 % diario,
+<div class="sub">Las dos cuentas ven los mismos setups SMC y pasan por el mismo guardián de riesgo (2 % por operación —con el lote mínimo de 1 oz, hasta 3 %—, −5 % diario,
 4 pérdidas paran el día, ratio ≥ 2:1, el stop solo puede acercarse). La única diferencia será el juicio de los agentes.</div>
 <div class="tablewrap"><table class="summary"><tr><th></th><th>SMC mecánica (control)</th><th>SMC agentes</th></tr>{body}</table></div>
 <div class="sub" style="margin-top:6px">{prog}</div>
