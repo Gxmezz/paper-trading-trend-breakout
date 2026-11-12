@@ -75,6 +75,8 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
     sd = sig.get("stop")
     sd = p.get("stop_atr", 2.0) * a if sd is None else np.asarray(sd, float)
     tp_r = p.get("tp_r"); trail = p.get("trail", False); tk = p.get("trail_atr", p.get("stop_atr", 2.0)); mb = p.get("max_bars")
+    swl = df["swl"].values if "swl" in df else None       # swap anual por vela (índices): largos pagan swl, cortos cobran sws
+    sws = df["sws"].values if "sws" in df else None; swn = df["swn"].values if "swn" in df else None
     day = (df.index - pd.Timedelta(hours=22)).normalize().asi8
     wdy = (df.index - pd.Timedelta(hours=22)).weekday.values
     CAP = rc.cap_eur * EURUSD; STEP = rc.step
@@ -96,7 +98,9 @@ def simulate(df, i0, sig, p, cost=0.20, rc=None, trades=None, curve=None):
     for i in range(i0, n):
         if day[i] != day[i - 1]:
             d_start = eq + (pos * q * (o[i] - entry) if pos else 0); consec = 0; locked = False; d_trades = 0
-            if pos == 1:
+            if pos and swl is not None:
+                sw = q * o[i] * (swl[i] if pos == 1 else -sws[i]) / 365 * swn[i]; eq -= sw; tpnl -= sw
+            elif pos == 1:
                 sw = q * o[i] * SWAP_LONG / 365 * (3 if wdy[i] == 2 else 1); eq -= sw; tpnl -= sw
         if pend_exit and pos: close(o[i] - pos * cst[i], i)
         pend_exit = False

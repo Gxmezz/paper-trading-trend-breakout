@@ -11,8 +11,10 @@ Walk-forward ANUAL: cada año de 2005 a 2024 se opera con la combinación elegid
 EXAMEN reservado: 2025-01-01 -> hoy (solo el coordinador: LAB_EXAM=1 y --exam).
 
 APROBADO v3 (coste base, top 1 salvo que se diga):
-  A. Acumulado 2005-2024 > 0 con top 1 y con top 5, y > 0 en cada década (2005-14 y 2015-24) con top 1.
-  B. >= 12 de 20 años no negativos y >= 60 operaciones.
+  A. Acumulado del periodo de prueba > 0 con top 1 y con top 5, y > 0 en cada mitad del periodo con top 1
+     (oro: 2005-14 y 2015-24; índices: 1990-2006 y 2007-24).
+  B. >= 60 % de años no negativos y >= 3 operaciones por año (oro: 12 de 20 y 60).
+  (Oro: prueba 2005-2024. Índices --asset NDX / SPX: prueba 1990-2024, swap por época con el tipo a 3 meses.)
   C. Caída máxima ENCADENANDO los 20 años en una sola cuenta >= -25 %.
   D. La combinación MEDIANA del grid, acumulada 2005-2024, > 0.
   E. Modelo nulo: desplazando al azar (circularmente) las señales de entrada dentro de cada año, con las mismas
@@ -22,19 +24,20 @@ APROBADO v3 (coste base, top 1 salvo que se diga):
 
 Contrato de idea (strategy/lab/daily/ideas/<nombre>.py): NAME, grid() (<= 200), signals(df, p) -> dict(L, S, [XL, XS, stop]).
 df = velas diarias (Open, High, Low, Close, date) con ~420 días de calentamiento. Usa dind.py para semanas/meses.
-Uso: python strategy/lab/daily/djudge.py <idea> [--procs 2]
+Uso: python strategy/lab/daily/djudge.py <idea> [--asset XAU|NDX|SPX] [--procs 2]
 """
 import importlib, json, os, sys, time, numpy as np, pandas as pd
+if "--asset" in sys.argv: os.environ["LAB_ASSET"] = sys.argv[sys.argv.index("--asset") + 1].upper()   # antes de importar dind
 from multiprocessing import Pool
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE)); sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE / "ideas"))
 import engine as E, dind
 
-OUT = HERE.parent.parent / "results" / "lab_daily"; OUT.mkdir(parents=True, exist_ok=True)
-TRAIN0 = 2002; TEST = list(range(2005, 2025)); YEARS = list(range(TRAIN0, 2025)); EXAM = "2025"
+OUT = HERE.parent.parent / "results" / "lab_daily" / ("" if dind.ASSET == "XAU" else dind.ASSET); OUT.mkdir(parents=True, exist_ok=True)
+TRAIN0 = dind.CFG["train0"]; TEST = list(range(dind.CFG["test0"], 2025)); YEARS = list(range(TRAIN0, 2025)); EXAM = "2025"
 MAX_GRID = 200; N_NULL = 200
-COSTS = {"base": (0.30, 0.0001), "stress": (0.50, 0.0002)}
+COSTS = {"base": dind.CFG["cost"], "stress": dind.CFG["stress"]}
 
 def rc(cost_pct): return E.RiskConfig(risk=0.01, cap_eur=10000, step=0.0001, cost_pct=cost_pct, max_risk_min_lot=1.0, mark_open=True)
 def bounds(y): return (f"{y}-01-01", None) if y == EXAM else (f"{y}-01-01", f"{y}-12-31")
@@ -102,7 +105,11 @@ def mar(cur):
     return cagr * 100, dd * 100, (cagr / abs(dd) if dd < 0 else np.inf)
 
 def buy_hold(years):
+    """Comprar y mantener (como un ETF, sin swap; en índices, con los dividendos reinvertidos de forma aproximada)."""
     df, i0 = dind.load(f"{years[0]}-01-01", f"{years[-1]}-12-31", warmup_days=0)
+    if dind.CFG["div"]:
+        tr = df.Close.iloc[i0:] * np.exp(np.arange(len(df) - i0) / 252 * np.log(1 + dind.CFG["div"] / 100))
+        return mar(tr)
     return mar(df.Close.iloc[i0:])
 
 def verdict(idea, d, G, years):
@@ -119,13 +126,13 @@ def verdict(idea, d, G, years):
     rng = np.random.default_rng(0)
     null = [chain(idea, G, picks, years, shift_rng=rng)[0] for _ in range(N_NULL)]
     null = np.array([c.iloc[-1] / c.iloc[0] - 1 for c in null]); p_null = float((null >= real).mean())
-    half = [y < 2015 for y in years]
+    mid = years[len(years) // 2]; half = [y < mid for y in years]   # primera y segunda mitad del periodo
     A = acum(r1) > 0 and acum(r5) > 0 and acum([r for r, h in zip(r1, half) if h]) > 0 and acum([r for r, h in zip(r1, half) if not h]) > 0
-    B = sum(r >= 0 for r in r1) >= 12 and trades >= 60
+    B = sum(r >= 0 for r in r1) >= 0.6 * len(years) and trades >= 3 * len(years)
     C = dd >= -25; D_ = acum(med) > 0; E_ = p_null <= 0.10; F = m >= bh_m; G_ = acum(r1s) > 0
-    res = dict(acum_top1=acum(r1), acum_top5=acum(r5), dec_05_14=acum([r for r, h in zip(r1, half) if h]),
-               dec_15_24=acum([r for r, h in zip(r1, half) if not h]), anos_no_neg=f"{sum(r >= 0 for r in r1)}/{len(years)}",
-               trades=trades, dd_encadenada=round(dd, 1), cagr=round(cagr, 1), MAR=round(m, 2), MAR_oro=round(bh_m, 2),
+    res = dict(acum_top1=acum(r1), acum_top5=acum(r5), mitad_1=acum([r for r, h in zip(r1, half) if h]),
+               mitad_2=acum([r for r, h in zip(r1, half) if not h]), anos_no_neg=f"{sum(r >= 0 for r in r1)}/{len(years)}",
+               trades=trades, dd_encadenada=round(dd, 1), cagr=round(cagr, 1), MAR=round(m, 2), MAR_comprar_mantener=round(bh_m, 2),
                mediana_grid=acum(med), p_nulo=round(p_null, 3), nulo_mediana=round(float(np.median(null)) * 100, 1),
                acum_estres=acum(r1s), A=A, B=B, C=C, D=D_, E=E_, F=F, G=G_, APROBADO=bool(A and B and C and D_ and E_ and F and G_))
     per_year = pd.DataFrame(dict(year=years, idx=[picks[y][0] if picks[y] else -1 for y in years], ret_top1=r1, ret_top5=r5,
