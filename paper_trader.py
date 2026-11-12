@@ -499,7 +499,7 @@ def process_idx(acc, st, fx):
     st["pos"] = so.get("pos", 0); st["stop"] = so["stop"] if st["pos"] else None
     st["units"] = [[so["qty"], so["entry"], str(so["t_in"])]] if st["pos"] else []
     st["cash"] = so["eq"] / E
-    st["equity"] = st["cash"] + (so["qty"] * (st["price"] - so["entry"]) / E if st["pos"] else 0.0)
+    st["equity"] = round(st["cash"] + (so["qty"] * (st["price"] - so["entry"]) / E if st["pos"] else 0.0), 2)
     pk = CAPITAL_EUR; dd = 0.0
     for v in list(cv) + [st["equity"]]: pk = max(pk, v); dd = min(dd, v / pk - 1)
     st["peak"] = pk; st["max_dd"] = dd; st["skipped"] = so.get("skipped", 0)
@@ -912,7 +912,7 @@ def process_smc_agent(acc, st, fx):
     # 4) capital y curva
     st["units"] = [[q, st["entry"], st["t_open"]] for q, _ in st["parts"]] if st["pos"] else []
     st["cash"] = st["eq_usd"] / E
-    st["equity"] = st["cash"] + (sum(st["pos"] * q * (st["price"] - st["entry"]) for q, _ in st["parts"]) / E if st["pos"] else 0.0)
+    st["equity"] = round(st["cash"] + (sum(st["pos"] * q * (st["price"] - st["entry"]) for q, _ in st["parts"]) / E if st["pos"] else 0.0), 2)
     st["peak"] = max(st["peak"], st["equity"]); st["max_dd"] = min(st["max_dd"], st["equity"] / st["peak"] - 1)
     st["setups_total"] = len(st["decisions"]); st["setups_taken"] = sum(1 for x in st["decisions"] if str(x.get("resultado", "")).startswith("operado"))
     st["ind"] = dict(spend_today=st["spend"].get(t.date().isoformat(), 0.0), spend_total=round(sum(st["spend"].values()), 4),
