@@ -18,3 +18,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python agents.py --selftest
+      - name: Prueba del agente de entrada (Opus 5.5, ~0,05-0,10 $)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agents.py --selftest-entry

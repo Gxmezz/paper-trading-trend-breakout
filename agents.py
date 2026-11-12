@@ -122,5 +122,17 @@ def selftest():
     text = next((b.text for b in r.content if b.type == "text"), "")
     print(f"Clave válida. Modelo: {r.model} · respuesta: {text.strip()[:40]!r} · coste: {cost_usd(MODEL_SELFTEST, r.usage):.5f} $")
 
+def selftest_entry():
+    """Prueba la llamada real del agente de entrada con un setup de ejemplo (coste ~0,05-0,10 $)."""
+    ctx = dict(setup=dict(lado="LARGO", zona=[4040.9, 4045.1], stop_mecanico=4039.7, cierre=4046.7, atr_m15=5.6,
+                          filtros_que_fallan=[], la_gemela_lo_opera=True, objetivos_gemela_R=[2, 3, 4]),
+               contexto=dict(hora_utc="2026-11-11 12:15", sesgo_estructura_H4="alcista", ema200_H1=4010.0,
+                             sma9_H1=4038.0, sma21_H1=4030.0, precio_ahora=4046.7, nota="CONTEXTO DE PRUEBA, sin velas"),
+               cuenta=dict(capital_eur=1000.0, resultado_hoy_pct=0.0, perdidas_hoy=0, ultimas_operaciones=[]))
+    r = decide_entry(ctx, 0.0)
+    print(json.dumps(r, ensure_ascii=False, indent=1))
+    if r["error"]: sys.exit(f"ERROR: {r['error']}")
+
 if __name__ == "__main__":
     if "--selftest" in sys.argv: selftest()
+    if "--selftest-entry" in sys.argv: selftest_entry()
