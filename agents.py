@@ -17,6 +17,7 @@ import json, os, sys, time
 
 MODEL_ENTRY = "claude-opus-5-5"
 MODEL_SELFTEST = "claude-haiku-5-5"
+# Fase 3: el gestor (MODEL_MGMT, Sonnet 5.5) revisa la operación abierta en cada cierre de vela M15.
 # $ por millón de tokens: (entrada, salida, lectura de caché, escritura de caché 5 min)
 PRICES = {"claude-opus-5-5": (4.0, 20.0, 0.20, 5.0), "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.5),
           "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125)}
@@ -71,37 +72,30 @@ def _mock(context):
                 targets=[round(entry + d * k * dist, 2) for k in (2, 3, 4)] if ok else [], break_even=True,
                 confidence=0.5, reason="Simulación local (PT_AGENT_MOCK): entra solo si no falla ningún filtro.")
 
-def decide_entry(context, spent_today):
-    """Devuelve dict(decision, stop, targets, break_even, confidence, reason, cost, model, error)."""
-    base = dict(decision="no_entrar", stop=None, targets=[], break_even=True, confidence=0.0, reason="", cost=0.0,
-                model=MODEL_ENTRY, error=None, ms=0)
+def _call(model, system, schema, context, base, spent_today, effort="medium"):
+    """Llamada común a la API: formato JSON fijo, respaldo ante rechazos, coste y errores sin excepciones."""
     if (os.environ.get("PT_AGENTS") or "on").lower() == "off":
         return {**base, "error": "agentes desactivados (PT_AGENTS=off)"}
-    if os.environ.get("PT_AGENT_MOCK"):
-        return {**base, **_mock(context), "model": "simulado"}
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {**base, "error": "falta ANTHROPIC_API_KEY"}
     if spent_today >= DAILY_CAP_USD:
         return {**base, "error": f"tope de gasto diario alcanzado ({spent_today:.2f} $ de {DAILY_CAP_USD:.2f} $)"}
     import anthropic
-    t0 = time.time()
+    t0 = time.time(); ms = lambda: int((time.time() - t0) * 1000)
     try:
         client = anthropic.Anthropic(max_retries=2, timeout=120)
         resp = client.beta.messages.create(
-            model=MODEL_ENTRY, max_tokens=8000,
+            model=model, max_tokens=8000,
             betas=["server-side-fallback-2026-07-01"], fallbacks="default",   # si el modelo rechaza, otro modelo responde
-            system=SYSTEM_ENTRY,
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_ENTRY}},
+            system=system,
+            output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
             messages=[{"role": "user", "content": json.dumps(context, ensure_ascii=False, sort_keys=True)}],
         )
-        c = cost_usd(MODEL_ENTRY, resp.usage)
-        if resp.stop_reason == "refusal":
-            return {**base, "cost": c, "error": "el modelo rechazó la petición", "ms": int((time.time() - t0) * 1000)}
-        if resp.stop_reason == "max_tokens":
-            return {**base, "cost": c, "error": "respuesta cortada (max_tokens)", "ms": int((time.time() - t0) * 1000)}
-        text = next(b.text for b in resp.content if b.type == "text")
-        out = json.loads(text)
-        return {**base, **out, "cost": c, "model": getattr(resp, "model", MODEL_ENTRY), "ms": int((time.time() - t0) * 1000)}
+        c = cost_usd(model, resp.usage)
+        if resp.stop_reason == "refusal": return {**base, "cost": c, "error": "el modelo rechazó la petición", "ms": ms()}
+        if resp.stop_reason == "max_tokens": return {**base, "cost": c, "error": "respuesta cortada (max_tokens)", "ms": ms()}
+        out = json.loads(next(b.text for b in resp.content if b.type == "text"))
+        return {**base, **out, "cost": c, "model": getattr(resp, "model", model), "ms": ms()}
     except anthropic.AuthenticationError:
         return {**base, "error": "clave de API no válida"}
     except anthropic.RateLimitError:
@@ -112,6 +106,61 @@ def decide_entry(context, spent_today):
         return {**base, "error": "sin conexión con la API"}
     except (json.JSONDecodeError, StopIteration) as e:
         return {**base, "error": f"respuesta no válida: {e!r}"[:200]}
+
+def _mocking():
+    return bool(os.environ.get("PT_AGENT_MOCK")) and (os.environ.get("PT_AGENTS") or "on").lower() != "off"
+
+def decide_entry(context, spent_today):
+    """Devuelve dict(decision, stop, targets, break_even, confidence, reason, cost, model, error)."""
+    base = dict(decision="no_entrar", stop=None, targets=[], break_even=True, confidence=0.0, reason="", cost=0.0,
+                model=MODEL_ENTRY, error=None, ms=0)
+    if _mocking(): return {**base, **_mock(context), "model": "simulado"}
+    return _call(MODEL_ENTRY, SYSTEM_ENTRY, SCHEMA_ENTRY, context, base, spent_today)
+
+# ---------- fase 3: AGENTE GESTOR de la operación abierta ----------
+MODEL_MGMT = "claude-sonnet-5-5"
+
+SYSTEM_MGMT = """Eres el agente GESTOR de operaciones de una cuenta de paper trading (dinero ficticio) de oro (XAUUSD, Vantage) que opera la estrategia SMC (Smart Money Concepts). Otro agente decidió la entrada; tú revisas la operación abierta al cierre de cada vela M15 y decides qué hacer. Hay una cuenta gemela mecánica que gestiona con reglas fijas (objetivos fijos y break even tras el primero, sin intervenir nunca); el experimento mide si la gestión con criterio mejora a esas reglas fijas, así que intervenir sin un motivo claro también se paga (costes y operaciones cortadas antes de tiempo).
+
+Acciones posibles (se aplican a partir de la siguiente vela M15):
+- "mantener": no cambiar nada. Es lo normal cuando no hay un motivo concreto.
+- "mover_stop": nuevo stop en nuevo_stop. Solo puede ACERCARSE al precio (reducir riesgo) y debe quedar al lado correcto del precio actual: un largo no puede bajar el stop y un corto no puede subirlo. Si lo incumples, el código lo rechaza.
+- "break_even": stop al precio de entrada (solo si el precio actual lo permite).
+- "cambiar_objetivos": nuevos precios objetivo en nuevos_objetivos, uno por cada parte abierta (mismo número), al lado correcto del precio.
+- "cerrar_parcial": cierra la parte más cercana al precio a la apertura de la siguiente vela.
+- "cerrar": cierra toda la posición a la apertura de la siguiente vela.
+
+Las reglas de riesgo (2 % por operación, -5 % diario, 4 pérdidas paran el día) las aplica el código y no se pueden ampliar.
+
+Responde con: accion, nuevo_stop (repite el stop actual si no lo cambias), nuevos_objetivos (repite los actuales si no los cambias) y reason (español, máximo 300 caracteres, los factores decisivos). No inventes datos que no estén en el contexto."""
+
+SCHEMA_MGMT = {
+    "type": "object",
+    "properties": {
+        "accion": {"type": "string", "enum": ["mantener", "mover_stop", "break_even", "cambiar_objetivos", "cerrar_parcial", "cerrar"]},
+        "nuevo_stop": {"type": "number"},
+        "nuevos_objetivos": {"type": "array", "items": {"type": "number"}},
+        "reason": {"type": "string"},
+    },
+    "required": ["accion", "nuevo_stop", "nuevos_objetivos", "reason"],
+    "additionalProperties": False,
+}
+
+def _mock_mgmt(context):
+    p = context["posicion"]
+    if p["R_ahora"] >= 1.0 and not p["break_even_hecho"]:
+        return dict(accion="break_even", nuevo_stop=p["entrada"], nuevos_objetivos=p["objetivos"], reason="Simulación: BE a +1R.")
+    if p["velas_en_operacion"] >= 12:
+        return dict(accion="cerrar", nuevo_stop=p["stop"], nuevos_objetivos=p["objetivos"], reason="Simulación: 3 h sin llegar.")
+    return dict(accion="mantener", nuevo_stop=p["stop"], nuevos_objetivos=p["objetivos"], reason="Simulación: mantener.")
+
+def decide_manage(context, spent_today):
+    """Devuelve dict(accion, nuevo_stop, nuevos_objetivos, reason, cost, model, error)."""
+    p = context["posicion"]
+    base = dict(accion="mantener", nuevo_stop=p["stop"], nuevos_objetivos=p["objetivos"], reason="", cost=0.0,
+                model=MODEL_MGMT, error=None, ms=0)
+    if _mocking(): return {**base, **_mock_mgmt(context), "model": "simulado"}
+    return _call(MODEL_MGMT, SYSTEM_MGMT, SCHEMA_MGMT, context, base, spent_today)
 
 def selftest():
     import anthropic
@@ -133,6 +182,17 @@ def selftest_entry():
     print(json.dumps(r, ensure_ascii=False, indent=1))
     if r["error"]: sys.exit(f"ERROR: {r['error']}")
 
+def selftest_manage():
+    """Prueba la llamada real del agente gestor con una posición de ejemplo (coste ~0,01-0,03 $)."""
+    ctx = dict(posicion=dict(lado="LARGO", entrada=4046.7, stop=4039.7, break_even_hecho=False, objetivos=[4060.7, 4067.7, 4074.7],
+                             oz_por_objetivo=[1, 1, 1], R_ahora=1.1, R_max=1.4, R_min=-0.3, velas_en_operacion=5,
+                             motivo_de_entrada="Largo a favor del sesgo H4 en killzone de NY."),
+               contexto=dict(hora_utc="2026-11-11 13:30", precio_ahora=4054.4, nota="CONTEXTO DE PRUEBA, sin velas"))
+    r = decide_manage(ctx, 0.0)
+    print(json.dumps(r, ensure_ascii=False, indent=1))
+    if r["error"]: sys.exit(f"ERROR: {r['error']}")
+
 if __name__ == "__main__":
+    if "--selftest-manage" in sys.argv: selftest_manage()
     if "--selftest" in sys.argv: selftest()
     if "--selftest-entry" in sys.argv: selftest_entry()

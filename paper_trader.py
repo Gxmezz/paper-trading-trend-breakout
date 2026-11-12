@@ -70,8 +70,9 @@ ACCOUNTS = [
                   conf_win=4, age=96, sl=0.2, pd=False, sess="kz", exit="R234", news="block", tp=(2, 3, 4)),
          desc="Los mismos setups SMC que la cuenta mecánica, pero un agente (Claude Opus 5.5) decide si entrar, el stop y los "
               "objetivos, viendo también los setups que la mecánica descarta. Mismo guardián de riesgo: 2 % por operación, "
-              "−5 % diario, 4 pérdidas paran el día, ratio ≥ 2:1. Sin entradas en ventanas de noticias. Fase 2: la gestión "
-              "de la operación abierta (break even y objetivos) sigue las reglas que fija el agente al entrar."),
+              "−5 % diario, 4 pérdidas paran el día, ratio ≥ 2:1. Sin entradas en ventanas de noticias. Fase 3: un agente gestor "
+              "(Claude Sonnet 5.5) revisa la operación abierta al cierre de cada vela M15 y puede acercar el stop, poner break even, "
+              "mover objetivos o cerrar (todo o una parte)."),
 ]
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 GATE = "https://api.gateio.ws/api/v4/futures/usdt"
@@ -526,6 +527,26 @@ def agent_context(df, pre, sig, fails, st, E, price):
                     perdidas_hoy=st["day_losses"], ultimas_operaciones=last),
     )
 
+def mgmt_context(df, st, C):
+    import pandas as pd
+    h1 = df.resample("1h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
+    d = st["pos"]; dist0 = st.get("dist0") or 1.0
+    t = df.index[-1] + pd.Timedelta(minutes=15)
+    nb = news_block(int(t.timestamp() * 1000)) or news_block(int((t + pd.Timedelta(minutes=15)).timestamp() * 1000))
+    return dict(
+        posicion=dict(lado="LARGO" if d == 1 else "CORTO", entrada=round(st["entry"], 2), stop=round(st["stop"], 2),
+                      break_even_hecho=bool(st["be_done"]), objetivos=[round(v, 2) for _, v in st["parts"]],
+                      oz_por_objetivo=[q for q, _ in st["parts"]], R_ahora=round(d * (C - st["entry"]) / dist0, 2),
+                      R_max=round(st.get("r_max", 0.0), 2), R_min=round(st.get("r_min", 0.0), 2),
+                      velas_en_operacion=st.get("bars_in", 0), motivo_de_entrada=st.get("entry_reason", ""),
+                      resultado_abierto_eur=round(d * sum(q for q, _ in st["parts"]) * (C - st["entry"]) / 1.12, 2)),
+        contexto=dict(hora_utc=t.strftime("%Y-%m-%d %H:%M"), hora_nueva_york=t.tz_convert(NY).strftime("%H:%M %a"),
+                      precio_ahora=round(float(C), 2), ventana_de_noticias_en_15_30_min=bool(nb),
+                      ema200_H1=round(float(h1.Close.ewm(span=200, adjust=False).mean().iloc[-1]), 2)),
+        velas=dict(M15_ultimas_32=_bars_table(df, 32), H1_ultimas_24=_bars_table(h1, 24),
+                   formato="[fecha UTC, apertura, máximo, mínimo, cierre]"),
+    )
+
 def process_smc_agent(acc, st, fx):
     import pandas as pd
     if str(HERE / "strategy") not in sys.path: sys.path.insert(0, str(HERE / "strategy"))
@@ -580,7 +601,8 @@ def process_smc_agent(acc, st, fx):
                 sel = {1: [len(tg) // 2], 2: [0, len(tg) - 1]}.get(n, list(range(len(tg))))
                 st["parts"] = [[base + (1 if k < rest else 0), tg[ti]] for k, ti in enumerate(sel)]
                 st.update(pos=d, entry=px, stop=pend["stop"], be=pend["be"], be_done=False, risk_usd=q * dist, qty=q,
-                          t_open=when, trade_pnl=0.0)
+                          t_open=when, trade_pnl=0.0, dist0=dist, bars_in=0, r_max=0.0, r_min=0.0, pend_mgmt=None,
+                          entry_reason=(rec or {}).get("reason", ""))
                 st["costs_paid"] += q * COST_SIDE * 2 / E
                 event(st, f"{'COMPRA' if d == 1 else 'VENTA'} (agente): {q:g} oz a {px:,.2f} · stop {pend['stop']:,.2f} · "
                           f"objetivos {', '.join(f'{x:,.2f}' for _, x in st['parts'])} · riesgo {q * dist / E:,.0f} €")
@@ -588,8 +610,22 @@ def process_smc_agent(acc, st, fx):
             else:
                 event(st, f"Entrada del agente rechazada por el guardián: {why}")
                 if rec: rec["resultado"] = f"rechazado por el guardián: {why}"
+        pm = st.get("pend_mgmt")
+        if pm and st["pos"]:
+            st["pend_mgmt"] = None; d = st["pos"]
+            if pm == "cerrar": close_trade(O, when, "cierre del gestor")
+            elif pm == "cerrar_parcial" and st["parts"]:
+                k = min(range(len(st["parts"])), key=lambda j: abs(st["parts"][j][1] - O))
+                q, _ = st["parts"].pop(k)
+                pnl = d * q * (O - d * COST_SIDE - st["entry"]); st["eq_usd"] += pnl; st["trade_pnl"] += pnl
+                event(st, f"Cierre parcial del gestor: {q:g} oz a {O:,.2f} · {pnl / E:+,.2f} €")
+                if not st["parts"]: close_trade(O, when, "cierre del gestor")
         if st["pos"]:
             d = st["pos"]
+            st["bars_in"] = st.get("bars_in", 0) + 1
+            if st.get("dist0"):
+                st["r_max"] = max(st.get("r_max", 0.0), d * ((H if d == 1 else L) - st["entry"]) / st["dist0"])
+                st["r_min"] = min(st.get("r_min", 0.0), d * ((L if d == 1 else H) - st["entry"]) / st["dist0"])
             if (L <= st["stop"]) if d == 1 else (H >= st["stop"]):
                 close_trade(min(O, st["stop"]) if d == 1 else max(O, st["stop"]), when, "BE" if st["be_done"] else "stop")
             else:
@@ -642,7 +678,39 @@ def process_smc_agent(acc, st, fx):
                 event(st, f"Setup {rec['side'].lower()} · agente: {rec['agente']} · {r['cost']:.3f} $")
             st["decisions"].insert(0, rec)
         del st["decisions"][200:]
-    # 3) capital y curva
+    # 3) fase 3: el gestor revisa la operación abierta al cierre de cada vela M15 (solo la vela recién cerrada)
+    last_bt = store[-1][0]
+    fresh = time.time() * 1000 - (last_bt + tfms) < 20 * 60_000
+    if st["pos"] and st.get("last_review") != last_bt and st["last_bar"] == last_bt and fresh and not st.get("pend_mgmt"):
+        st["last_review"] = last_bt; today = t.date().isoformat()
+        C = store[-1][4]; d = st["pos"]
+        ctx = mgmt_context(df, st, C)
+        r = agents.decide_manage(ctx, st["spend"].get(today, 0.0))
+        st["spend"][today] = round(st["spend"].get(today, 0.0) + r["cost"], 4)
+        acc_ = r["accion"]; res = "sin cambios"
+        if r["error"]: acc_, res = "mantener", f"error: {r['error']}"
+        elif acc_ in ("mover_stop", "break_even"):
+            new = st["entry"] if acc_ == "break_even" else float(r["nuevo_stop"])
+            ok, why = risk_guard.check_stop_change(d, st["stop"], new, C)
+            if ok:
+                st["stop"] = new; st["be_done"] = st["be_done"] or abs(new - st["entry"]) < 1e-6 or (new - st["entry"]) * d > 0
+                res = f"stop a {new:,.2f}"; event(st, f"Gestor: stop a {new:,.2f}")
+            else: res = f"rechazado por el guardián: {why}"
+        elif acc_ == "cambiar_objetivos":
+            tg = [float(v) for v in r["nuevos_objetivos"]]
+            if len(tg) == len(st["parts"]) and all((v - C) * d > 0 for v in tg):
+                tg = sorted(tg, reverse=(d == -1))
+                st["parts"] = [[q, v] for (q, _), v in zip(st["parts"], tg)]
+                res = "objetivos: " + ", ".join(f"{v:,.2f}" for v in tg); event(st, f"Gestor: {res}")
+            else: res = "rechazado: número de objetivos distinto o al lado incorrecto"
+        elif acc_ in ("cerrar", "cerrar_parcial"):
+            st["pend_mgmt"] = acc_; res = "a la apertura de la siguiente vela"
+            event(st, f"Gestor: {'cerrar todo' if acc_ == 'cerrar' else 'cierre parcial'} en la siguiente vela")
+        st.setdefault("mgmt", []).insert(0, dict(time=ms_to_dt(last_bt).isoformat(), accion=acc_, resultado=res,
+                                                 R=round(ctx["posicion"]["R_ahora"], 2), reason=r.get("reason", ""),
+                                                 cost=round(r["cost"], 4), model=r["model"]))
+        del st["mgmt"][300:]
+    # 4) capital y curva
     st["units"] = [[q, st["entry"], st["t_open"]] for q, _ in st["parts"]] if st["pos"] else []
     st["cash"] = st["eq_usd"] / E
     st["equity"] = st["cash"] + (sum(st["pos"] * q * (st["price"] - st["entry"]) for q, _ in st["parts"]) / E if st["pos"] else 0.0)
@@ -711,6 +779,10 @@ def smc_section(s):
                     f'<td>{html.escape(str(x.get("agente", "")))}</td><td>{html.escape(str(x.get("resultado", "")))}</td>'
                     f'<td class="muted">{html.escape(str(x.get("reason", "")))}</td><td>{x.get("cost", 0) or 0:.3f} $</td></tr>'
                     for x in decs) or '<tr><td colspan="7" class="muted">El agente aún no ha evaluado ningún setup</td></tr>'
+    mg = (ag or {}).get("mgmt", [])[:15]
+    mrows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["R"]:+.2f}</td><td>{html.escape(x["accion"])}</td>'
+                    f'<td>{html.escape(x["resultado"])}</td><td class="muted">{html.escape(x.get("reason", ""))}</td><td>{x.get("cost", 0):.3f} $</td></tr>'
+                    for x in mg) or '<tr><td colspan="6" class="muted">El gestor aún no ha revisado ninguna operación</td></tr>'
     setups = mec.get("setups", [])[:15]
     srows = "".join(f'<tr><td>{iso_madrid(x["time"])}</td><td>{x["side"]}</td><td>{fmt(x["zone"][0])} – {fmt(x["zone"][1])}</td>'
                     f'<td>{fmt(x["stop"])}</td><td class="{"up" if x["result"] == "operado" else "muted"}">{html.escape(x["result"])}</td></tr>'
@@ -723,7 +795,9 @@ def smc_section(s):
 <details style="margin-top:8px"><summary>Registro de setups detectados (últimos 15, hora de Madrid)</summary>
 <table><tr><th>Vela</th><th>Lado</th><th>Zona</th><th>Stop</th><th>Decisión</th></tr>{srows}</table></details>
 <details style="margin-top:8px" open><summary>Decisiones del agente (últimas 15, hora de Madrid)</summary>
-<div class="tablewrap"><table><tr><th>Vela</th><th>Lado</th><th>Gemela</th><th>Agente</th><th>Resultado</th><th>Motivo del agente</th><th>Coste</th></tr>{drows}</table></div></details>'''
+<div class="tablewrap"><table><tr><th>Vela</th><th>Lado</th><th>Gemela</th><th>Agente</th><th>Resultado</th><th>Motivo del agente</th><th>Coste</th></tr>{drows}</table></div></details>
+<details style="margin-top:8px"><summary>Gestión de operaciones abiertas (últimas 15 revisiones, hora de Madrid)</summary>
+<div class="tablewrap"><table><tr><th>Vela</th><th>R en ese momento</th><th>Acción</th><th>Resultado</th><th>Motivo del gestor</th><th>Coste</th></tr>{mrows}</table></div></details>'''
 
 def summary_table(s, fx):
     rows = []

@@ -22,6 +22,8 @@ dashboard en GitHub Pages cada ~7 minutos.
 
 Cada setup SMC confirmado queda registrado (vela, lado, zona, stop y decisión: operado, descartado por qué filtro o rechazado por el guardián) en el estado publicado y en la sección *Experimento SMC* del dashboard, junto con la comparativa de las dos cuentas y el progreso hacia la evaluación (100 operaciones o 3 meses).
 
+**Fase 3 (gestor):** al cierre de cada vela M15 con una operación abierta, Claude Sonnet 5.5 revisa la posición (R actual, máximo y mínimo en R, velas, noticias próximas) y puede mantener, acercar el stop, poner break even, mover objetivos o cerrar todo o una parte en la siguiente vela. El guardián rechaza cualquier stop que se aleje. Cada revisión queda en la tabla *Gestión de operaciones abiertas*.
+
 **Fase 2 (cuenta *SMC agentes*):** `agents.py` llama a Claude Opus 5.5 cada vez que el detector confirma un setup SMC (también los que la gemela descarta por sus filtros). El agente decide si entra, el stop y hasta 3 objetivos, con break even opcional; su respuesta tiene formato JSON fijo y la valida el guardián de riesgo. Cada decisión queda registrada con su motivo y su coste en el dashboard. Tope de gasto: variable del repositorio `PT_AGENT_DAILY_USD` (2 $/día por defecto); `PT_AGENTS=off` desactiva el agente. La clave es el secreto `ANTHROPIC_API_KEY`; el workflow *Prueba de la clave de la API* la comprueba con una llamada mínima.
 
 La cuenta M5 se retiró el 11/11/2026 (no se pudo validar con datos reales: Vantage no guarda M5 antiguo); su estado queda archivado en `state.json`.
