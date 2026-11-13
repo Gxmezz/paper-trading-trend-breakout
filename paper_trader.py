@@ -1259,6 +1259,10 @@ def render(s):
     idx_rows.sort(reverse=True)
     idx_trades = "".join(r for _, r in idx_rows) or '<tr><td colspan="10" class="muted">Aún no hay operaciones cerradas</td></tr>'
     note = os.environ.get("PT_NOTE", "Si esta hora tiene más de 2 minutos, el proceso no está corriendo.")
+    try:
+        import btc_paper; btc_html = btc_paper.section(s, fx, madrid, iso_madrid, spark)
+    except Exception as ex:
+        log(f"[btc] error al pintar: {ex!r}"); btc_html = ""
     DASH.write_text(f'''<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
 <title>Paper trading · Vantage</title>
 <style>
@@ -1293,7 +1297,7 @@ table.summary th{{color:#8b97a5;font-weight:600;font-size:12px}} table.summary t
 .tabs a.on{{background:#1f3a5c;border-color:#3987e5}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
-<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#spx" data-v="spx">S&amp;P 500</a></nav>
+<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#btc" data-v="btc">BTC</a><a href="#spx" data-v="spx">S&amp;P 500</a></nav>
 <section class="view" id="v-oro">
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
 <div class="muted">Dinero ficticio · precio del oro: {price_src} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
@@ -1323,6 +1327,7 @@ Señal al cierre de la sesión (22:00 en Madrid) y entrada o salida a la apertur
 <h2 style="margin-top:22px">Operaciones cerradas</h2>
 <table><tr><th>Cuenta</th><th>Lado</th><th>Entrada (Madrid)</th><th>Salida (Madrid)</th><th>Lotes</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{idx_trades}</table>
 </section>
+{btc_html}
 <script>(function(){{function show(){{var v=(location.hash||'#oro').slice(1);if(!document.getElementById('v-'+v))v='oro';
 document.querySelectorAll('.view').forEach(function(e){{e.style.display=e.id==='v-'+v?'':'none'}});
 document.querySelectorAll('.tabs a').forEach(function(a){{a.classList.toggle('on',a.dataset.v===v)}});}}
@@ -1350,6 +1355,11 @@ def main():
             except Exception as ex:
                 log(f"[{acc['id']}] error: {ex!r}")
                 if once: traceback.print_exc()
+        try:
+            import btc_paper; btc_paper.step(s, s["fx"], madrid, log)
+        except Exception as ex:
+            log(f"[btc] error: {ex!r}")
+            if once: traceback.print_exc()
         try: maybe_weekly_report(s)
         except Exception as ex: log(f"informe semanal: error {ex!r}")
         s["updated"] = now_utc().isoformat()

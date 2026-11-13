@@ -1,0 +1,97 @@
+//@version=6
+// BTC Vantage · cuenta de 1000 € · cartera de 3 estrategias (máximo 3 indicadores cada una)
+//
+//   Pullback M15        : EMA 200 + RSI(3) < 5 compra / > 95 vende · sale con RSI 60/40 · stop ATR×2 · 07-20 UTC · riesgo 3 %
+//   Volatilidad M15     : apertura del día UTC + 1×rango de ayer · EMA 200 de H1 · stop ATR×3 · solo largos · 13-21 UTC
+//                         · riesgo 2 % · cierra en la última vela del día UTC (sin swap)
+//   Ruptura M30         : EMA 200 de H4 + Donchian 60 + ATR×5 trailing · hasta 3 unidades · solo largos · riesgo 1 %
+//                         · cierra en la última vela del día UTC
+//
+// En el paper trading las tres comparten una sola cuenta. TradingView prueba una estrategia por gráfico: elige
+// cuál en "Estrategia" y pon el gráfico en su temporalidad (M15 o M30) sobre VANTAGE:BTCUSD (o BINANCE:BTCUSDT).
+// Lotes: 0,01 BTC mínimo. Si 0,01 BTC arriesga más del 4 % se descarta la señal. Coste 0,02 % por lado.
+// Swaps NO simulados (Vantage cobra en torno a un 20 %/año; las dos estrategias con cierre diario no los pagan).
+strategy("BTC Vantage 1000€ · cartera", overlay = true,
+     initial_capital = 1000, currency = currency.EUR,
+     commission_type = strategy.commission.percent, commission_value = 0.02,
+     slippage = 0, pyramiding = 3, process_orders_on_close = false,
+     calc_on_every_tick = false, margin_long = 10, margin_short = 10)
+
+sel     = input.string("Pullback M15", "Estrategia", options = ["Pullback M15", "Volatilidad M15", "Ruptura M30"])
+maxRisk = input.float(4.0, "Riesgo máx. si el lote mínimo lo supera (%)", step = 0.5) / 100
+riskMul = input.float(1.0, "Multiplicador de riesgo", step = 0.25)
+
+fam = sel == "Pullback M15" ? 1 : sel == "Volatilidad M15" ? 2 : 3
+tfOk = fam == 3 ? timeframe.period == "30" : timeframe.period == "15"
+[s0, s1, riskPct, mult, flat] = switch fam
+    1 => [7, 20, 0.03, 2.0, false]
+    2 => [13, 21, 0.02, 3.0, true]
+    => [0, 24, 0.01, 5.0, true]
+
+// Indicadores
+emaTf  = ta.ema(close, 200)
+emaH1  = request.security(syminfo.tickerid, "60", ta.ema(close, 200)[1], lookahead = barmerge.lookahead_on)
+emaH4  = request.security(syminfo.tickerid, "240", ta.ema(close, 200)[1], lookahead = barmerge.lookahead_on)
+trend  = fam == 1 ? emaTf : fam == 2 ? emaH1 : emaH4
+r      = ta.rsi(close, 3)
+dOpen  = request.security(syminfo.tickerid, "D", open, lookahead = barmerge.lookahead_on)
+dRange = request.security(syminfo.tickerid, "D", high[1] - low[1], lookahead = barmerge.lookahead_on)
+vbHi   = dOpen + 1.0 * dRange
+upper  = ta.highest(high, 60)[1]
+atr    = ta.atr(14)
+dist   = mult * atr
+
+h = hour(time, "UTC")
+inSess  = h >= s0 and h < s1
+lastBar = flat and (time_close % 86400000 == 0)          // última vela del día UTC
+ok      = tfOk and inSess and not lastBar and not na(trend)
+
+// Tamaño: múltiplos de 0,01 BTC, riesgo en EUR convertido a USD
+fx     = request.currency_rate("EUR", "USD")
+eqUsd  = strategy.equity * fx
+qtyRaw = math.floor(eqUsd * riskPct * riskMul / dist / 0.01) * 0.01
+qty    = qtyRaw >= 0.01 ? qtyRaw : (0.01 * dist <= eqUsd * maxRisk ? 0.01 : 0)
+expoOk = (math.abs(strategy.position_size) + qty) * close <= eqUsd * 10
+
+var float stopPx = na
+
+if fam == 1
+    if strategy.position_size > 0 and r > 60
+        strategy.close("L", comment = "RSI salida")
+    if strategy.position_size < 0 and r < 40
+        strategy.close("S", comment = "RSI salida")
+    if strategy.position_size == 0 and ok and qty > 0 and expoOk
+        if close > trend and r < 5
+            stopPx := close - dist
+            strategy.entry("L", strategy.long, qty = qty)
+        else if close < trend and r > 95
+            stopPx := close + dist
+            strategy.entry("S", strategy.short, qty = qty)
+
+if fam == 2
+    if strategy.position_size == 0 and ok and qty > 0 and expoOk and close > vbHi and close > trend
+        stopPx := close - dist
+        strategy.entry("L", strategy.long, qty = qty)
+
+if fam == 3
+    if strategy.position_size > 0
+        stopPx := math.max(stopPx, close - dist)
+    if ok and strategy.opentrades < 3 and qty > 0 and expoOk and close > upper and close > trend
+        stopPx := strategy.position_size > 0 ? math.max(stopPx, close - dist) : close - dist
+        strategy.entry("L", strategy.long, qty = qty)
+
+if lastBar and strategy.position_size != 0
+    strategy.close_all(comment = "Cierre diario")
+
+strategy.exit("XL", from_entry = "L", stop = stopPx)
+strategy.exit("XS", from_entry = "S", stop = stopPx)
+
+plot(trend, "Tendencia (EMA 200)", color.orange, 2)
+plot(fam == 2 ? vbHi : na, "Ruptura volatilidad", color.new(color.teal, 30), 1, plot.style_linebr)
+plot(fam == 3 ? upper : na, "Donchian 60", color.new(color.teal, 40))
+plot(strategy.position_size != 0 ? stopPx : na, "Stop", color.fuchsia, 2, plot.style_linebr)
+
+var table info = table.new(position.top_right, 1, 1)
+if barstate.islast
+    txt = not tfOk ? "⚠ Pon el gráfico en " + (fam == 3 ? "30 minutos" : "15 minutos") : sel
+    table.cell(info, 0, 0, txt, bgcolor = tfOk ? color.new(color.gray, 70) : color.new(color.red, 20), text_color = color.white)

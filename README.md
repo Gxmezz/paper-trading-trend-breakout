@@ -90,6 +90,28 @@ Para repetirlo: `python strategy/download_data.py`, luego `python strategy/smc_o
 
 El dashboard tiene dos pestañas: **Oro** (las cuentas de oro y el experimento de agentes) y **S&P 500**. La cuenta *S&P 500 · RSI(2)* es la única idea del laboratorio de índices (`strategy/lab/daily`, `--asset SPX`) que aprobó el walk-forward 1990-2024, la auditoría del escéptico y el examen 2025-26 (`strategy/lab/daily/EXAMEN_INDICES.md`): compra a la apertura cuando el RSI(2) diario cierra por debajo de 25 sobre la media de 100 sesiones y vende tras un cierre con RSI(2) > 70 o a los 10 días (stop 3 ATR). Toma las sesiones ya cerradas de Yahoo (^GSPC) y el tipo a 3 meses (^IRX), y repite cada vez el backtest exacto con el motor del laboratorio (CFD SP500.r de Vantage: 0,1 lote mínimo, riesgo 2 % sin forzar el tamaño, −5 % diario, costes 0,01 % por lado, swap por tipo de interés).
 
+## Vista BTC · cartera de 3 estrategias en una cuenta de 1000 €
+
+Pestaña **BTC** del dashboard (`btc_paper.py`). Las tres estrategias comparten una sola cuenta de 1000 €: cada una
+calcula su tamaño sobre el capital total de la cartera y el apalancamiento máximo (1:10) se aplica a toda la cartera.
+
+| Estrategia | Reglas (máx. 3 indicadores) | Riesgo |
+|---|---|---|
+| M15 · Pullback RSI | EMA 200 + RSI(3) < 5 compra / > 95 vende · sale con RSI 60/40 · stop ATR×2 · entradas 07–20 UTC | 3 % |
+| M15 · Ruptura de volatilidad | Apertura del día UTC + 1×rango de ayer · EMA 200 de H1 · stop ATR×3 · solo largos · entradas 13–21 UTC · cierra antes de medianoche UTC (sin swap) | 2 % |
+| M30 · Ruptura con cierre diario | EMA 200 de H4 + Donchian 60 + ATR×5 trailing · hasta 3 unidades · solo largos · cierra antes de medianoche UTC | 1 % |
+
+Selección con `strategy/btc_opt.py` (BO/BOH/PB) y `strategy/btc_opt2.py` (ruptura de volatilidad, Bollinger, toma de
+beneficio, breakeven, cierre diario): más de 5.000 combinaciones por temporalidad, elegidas con 2022-24 y 2025 y
+comprobadas en ene-oct 2026. Cartera en una cuenta de 1000 € (aproximación con rendimientos diarios):
+2022-24 +2,3 %/mes (caída −26 %), 2025 +2,5 %/mes (−16 %), 2026 +4,4 %/mes (−16 %). H1, M5 y M1 se descartaron
+(H1 tiene ventaja, pero con 1000 € el lote mínimo de 0,01 BTC le obliga a arriesgar de más).
+
+Condiciones supuestas (Vantage no publica la ficha de BTCUSD): 1 lote = 1 BTC, mínimo 0,01 BTC; coste 0,02 % por
+lado; swap 20 %/año en largos y cortos, cobrado a las 00:00 UTC; BTC cotiza 24/7. Precio: BTCUSDT spot de Binance,
+los mismos datos del backtest. El motor reproduce el backtest (mismas operaciones y resultado, jul-oct 2026).
+`strategy/btc_vantage.pine` es el script de TradingView (una estrategia por gráfico).
+
 ## Condiciones simuladas
 
 - Cuenta en EUR: el resultado en USD se convierte al EURUSD del momento.
