@@ -35,8 +35,21 @@ emaH1  = request.security(syminfo.tickerid, "60", ta.ema(close, 200)[1], lookahe
 emaH4  = request.security(syminfo.tickerid, "240", ta.ema(close, 200)[1], lookahead = barmerge.lookahead_on)
 trend  = fam == 1 ? emaTf : fam == 2 ? emaH1 : emaH4
 r      = ta.rsi(close, 3)
-dOpen  = request.security(syminfo.tickerid, "D", open, lookahead = barmerge.lookahead_on)
-dRange = request.security(syminfo.tickerid, "D", high[1] - low[1], lookahead = barmerge.lookahead_on)
+// Apertura del día y rango de ayer en día UTC, calculados con las velas del gráfico
+// (la vela diaria de cada bróker puede empezar a otra hora, p. ej. la del servidor de Vantage)
+newDay = ta.change(dayofmonth(time, "UTC")) != 0
+var float dOpen = na
+var float dHigh = na
+var float dLow  = na
+var float dRange = na
+if newDay
+    dRange := dHigh - dLow
+    dOpen  := open
+    dHigh  := high
+    dLow   := low
+else
+    dHigh := na(dHigh) ? high : math.max(dHigh, high)
+    dLow  := na(dLow) ? low : math.min(dLow, low)
 vbHi   = dOpen + 1.0 * dRange
 upper  = ta.highest(high, 60)[1]
 atr    = ta.atr(14)
