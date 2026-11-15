@@ -1297,7 +1297,7 @@ table.summary th{{color:#8b97a5;font-weight:600;font-size:12px}} table.summary t
 .tabs a.on{{background:#1f3a5c;border-color:#3987e5}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
-<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#btc" data-v="btc">BTC</a><a href="#spx" data-v="spx">S&amp;P 500</a></nav>
+<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#btc" data-v="btc">Cripto</a><a href="#spx" data-v="spx">S&amp;P 500</a></nav>
 <section class="view" id="v-oro">
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
 <div class="muted">Dinero ficticio · precio del oro: {price_src} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
