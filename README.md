@@ -16,6 +16,14 @@ dashboard en GitHub Pages cada ~7 minutos.
 | Oro M15 | Pullback | EMA 200 de H1 (tendencia) + RSI(2) < 20 para comprar, sale con RSI(2) > 80 · stop ATR×2 · entradas 07–20 UTC | 1 % |
 | Oro M15 · SMC mecánica (control) | SMC del curso | `strategy/smc.py` v2, la mejor combinación de entrenamiento: sesgo de estructura H4 + EMA 200 H1 · Order Block con FVG tras ruptura · confirmación por cierre · stop tras el OB + 0,2 ATR · parciales 2R/3R/4R con break even · killzones · sin entradas en noticias. Repite cada minuto el backtest exacto sobre las velas M15 guardadas. Es la cuenta de control del futuro equipo de agentes (en backtest fuera de muestra perdía −2 %/mes) | 2 % (−5 % diario, 4 pérdidas paran el día) |
 
+## Cripto · copia de carteras de Hyperliquid (pestaña *Cripto · Copy*)
+
+`copy_trader.py` copia cada minuto, con dinero ficticio, las posiciones públicas de 10 carteras de Hyperliquid
+elegidas con la regla S2 que aprobó el examen de `strategy/lab/copy_hl/` (1000 €, 100 € por cartera, tope 3×,
+9 monedas, comisión + deslizamiento 0,075 % por lado y funding), frente a una cuenta de control con 10 carteras al azar.
+El workflow *Copy HL · selección mensual* renueva las carteras el día 1 de cada mes (`select_live.py` → `seleccion.json`).
+Evaluación fijada de antemano del 2026-11-17 al 2027-02-16: `strategy/lab/copy_hl/PREREGISTRO_VIVO.md`.
+
 ### Experimento SMC: agentes frente a mecánica
 
 `strategy/risk_guard.py` aplica las reglas de riesgo como límites duros (2 % por operación en onzas enteras, sin forzar el tamaño; −5 % diario sin abrir si el riesgo no cabe; 4 pérdidas en el día paran el día; ratio ≥ 2:1; el stop de una operación abierta solo puede acercarse). Lo usan el backtest SMC, la cuenta SMC mecánica y la futura cuenta de agentes, así que las reglas son idénticas. Pruebas: `python strategy/test_risk_guard.py`.

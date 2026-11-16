@@ -1,0 +1,38 @@
+name: Copy HL · selección mensual
+
+# El día 1 de cada mes repite el procedimiento del examen (strategy/lab/copy_hl/) con datos nuevos
+# y guarda las 10 carteras de la cuenta S2 y las 10 del control al azar en seleccion.json.
+# Tarda ~4 h por el límite de peso de la API de Hyperliquid. El bucle del paper trading lee el
+# archivo nuevo en su siguiente ejecución; hasta entonces sigue con la selección anterior.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "5 0 1 * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: copy-select
+  cancel-in-progress: false
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Selección (descarga, simulación y elección)
+        run: python -u strategy/lab/copy_hl/select_live.py
+      - name: Guardar seleccion.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add strategy/lab/copy_hl/seleccion.json
+          git commit -m "Copy HL: selección $(date -u +%Y-%m)" || exit 0
+          git pull --rebase -q origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"
