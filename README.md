@@ -16,7 +16,7 @@ dashboard en GitHub Pages cada ~7 minutos.
 | Oro M15 | Pullback | EMA 200 de H1 (tendencia) + RSI(2) < 20 para comprar, sale con RSI(2) > 80 · stop ATR×2 · entradas 07–20 UTC | 1 % |
 | Oro M15 · SMC mecánica (control) | SMC del curso | `strategy/smc.py` v2, la mejor combinación de entrenamiento: sesgo de estructura H4 + EMA 200 H1 · Order Block con FVG tras ruptura · confirmación por cierre · stop tras el OB + 0,2 ATR · parciales 2R/3R/4R con break even · killzones · sin entradas en noticias. Repite cada minuto el backtest exacto sobre las velas M15 guardadas. Es la cuenta de control del futuro equipo de agentes (en backtest fuera de muestra perdía −2 %/mes) | 2 % (−5 % diario, 4 pérdidas paran el día) |
 
-## Cripto · copia de carteras de Hyperliquid (pestaña *Cripto · Copy*)
+## Copy HL · copia de carteras de Hyperliquid (pestaña *Copy HL*)
 
 `copy_trader.py` copia cada minuto, con dinero ficticio, las posiciones públicas de 10 carteras de Hyperliquid
 elegidas con la regla S2 que aprobó el examen de `strategy/lab/copy_hl/` (1000 €, 100 € por cartera, tope 3×,
@@ -97,6 +97,31 @@ Para repetirlo: `python strategy/download_data.py`, luego `python strategy/smc_o
 ## Vista S&P 500
 
 El dashboard tiene dos pestañas: **Oro** (las cuentas de oro y el experimento de agentes) y **S&P 500**. La cuenta *S&P 500 · RSI(2)* es la única idea del laboratorio de índices (`strategy/lab/daily`, `--asset SPX`) que aprobó el walk-forward 1990-2024, la auditoría del escéptico y el examen 2025-26 (`strategy/lab/daily/EXAMEN_INDICES.md`): compra a la apertura cuando el RSI(2) diario cierra por debajo de 25 sobre la media de 100 sesiones y vende tras un cierre con RSI(2) > 70 o a los 10 días (stop 3 ATR). Toma las sesiones ya cerradas de Yahoo (^GSPC) y el tipo a 3 meses (^IRX), y repite cada vez el backtest exacto con el motor del laboratorio (CFD SP500.r de Vantage: 0,1 lote mínimo, riesgo 2 % sin forzar el tamaño, −5 % diario, costes 0,01 % por lado, swap por tipo de interés).
+
+## Vista Cripto · BTC y ETH · 5 estrategias en una cuenta de 1000 €
+
+Pestaña **Cripto** del dashboard (`btc_paper.py`). Las cinco estrategias comparten una sola cuenta de 1000 €: cada una
+calcula su tamaño sobre el capital total de la cartera y el apalancamiento máximo (1:10) se aplica a toda la cartera.
+
+| Estrategia | Activos | Reglas (máx. 3 indicadores) | Riesgo |
+|---|---|---|---|
+| M15 · Pullback RSI | BTC | EMA 200 + RSI(3) < 5 compra / > 95 vende · sale con RSI 60/40 · stop ATR×2 · entradas 07–20 UTC | 3 % |
+| M15 · Ruptura de volatilidad | BTC y ETH | Apertura del día UTC + 1×rango de ayer · EMA 200 de H1 · stop ATR×3 · solo largos · entradas 13–21 UTC · cierra antes de medianoche UTC (sin swap) | 1 % |
+| M30 · Ruptura con cierre diario | BTC y ETH | EMA 200 de H4 + Donchian 60 + ATR×5 trailing · hasta 3 unidades · solo largos · cierra antes de medianoche UTC | 0,5 % |
+
+Selección con `strategy/btc_opt.py` (BO/BOH/PB) y `strategy/btc_opt2.py` (ruptura de volatilidad, Bollinger, toma de
+beneficio, breakeven, cierre diario): más de 5.000 combinaciones por temporalidad en BTC, elegidas con 2022-24 y 2025 y
+comprobadas en ene-oct 2026. Después se aplicaron sin reajustar a ETH: las dos rupturas son rentables en los tres
+periodos (también con coste 0,05 %); el pullback no, así que en ETH no se usa. Cartera en una cuenta de 1000 €
+(aproximación con rendimientos diarios): 2022-24 +2,6 %/mes (caída −23 %), 2025 +3,6 %/mes (−13 %), 2026 +5,2 %/mes
+(−16 %), unas 28 operaciones al mes. Solo con BTC eran +2,3 / +2,5 / +4,4 %/mes y 16 operaciones al mes.
+H1, M5 y M1 se descartaron (H1 tiene ventaja, pero con 1000 € el lote mínimo de 0,01 BTC le obliga a arriesgar de más).
+
+Condiciones supuestas (Vantage no publica las fichas): 1 lote = 1 BTC / 1 ETH, mínimo 0,01; coste 0,02 % (BTC) y
+0,03 % (ETH) por lado; swap 20 %/año en largos y cortos, cobrado a las 00:00 UTC; cotizan 24/7. Precio: BTCUSDT y
+ETHUSDT spot de Binance, los mismos datos del backtest. El motor reproduce el backtest (mismas operaciones y
+resultado, jul-oct 2026). `strategy/btc_vantage.pine` es el script de TradingView (una estrategia por gráfico; en
+ETH usa solo las dos rupturas).
 
 ## Condiciones simuladas
 

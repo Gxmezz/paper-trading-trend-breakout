@@ -1264,6 +1264,10 @@ def render(s):
     except Exception as ex:
         copy_html = f'<p class="muted">Error al mostrar el copy trading: {html.escape(repr(ex))}</p>'
     note = os.environ.get("PT_NOTE", "Si esta hora tiene más de 2 minutos, el proceso no está corriendo.")
+    try:
+        import btc_paper; btc_html = btc_paper.section(s, fx, madrid, iso_madrid, spark)
+    except Exception as ex:
+        log(f"[btc] error al pintar: {ex!r}"); btc_html = ""
     DASH.write_text(f'''<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="60">
 <title>Paper trading · Vantage</title>
 <style>
@@ -1298,7 +1302,7 @@ table.summary th{{color:#8b97a5;font-weight:600;font-size:12px}} table.summary t
 .tabs a.on{{background:#1f3a5c;border-color:#3987e5}}
 .warn{{background:#2d2410;border:1px solid #5c4813;color:#e8c66b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:16px}}
 </style></head><body>
-<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#spx" data-v="spx">S&amp;P 500</a><a href="#cripto" data-v="cripto">Cripto · Copy</a></nav>
+<nav class="tabs"><a href="#oro" data-v="oro">Oro</a><a href="#btc" data-v="btc">Cripto</a><a href="#spx" data-v="spx">S&amp;P 500</a><a href="#copy" data-v="copy">Copy HL</a></nav>
 <section class="view" id="v-oro">
 <div class="top"><div><h1>Paper trading · Oro (Vantage) · 1000 € por estrategia</h1>
 <div class="muted">Dinero ficticio · precio del oro: {price_src} · EURUSD {fx:.4f} · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid) · la página se recarga cada minuto</div></div>
@@ -1328,7 +1332,8 @@ Señal al cierre de la sesión (22:00 en Madrid) y entrada o salida a la apertur
 <h2 style="margin-top:22px">Operaciones cerradas</h2>
 <table><tr><th>Cuenta</th><th>Lado</th><th>Entrada (Madrid)</th><th>Salida (Madrid)</th><th>Lotes</th><th>Precio entrada</th><th>Precio salida</th><th>P/L €</th><th>R</th><th>Motivo</th></tr>{idx_trades}</table>
 </section>
-<section class="view" id="v-cripto">
+{btc_html}
+<section class="view" id="v-copy">
 <div class="top"><div><h1>Paper trading · Copia de carteras de Hyperliquid · 1000 € por cuenta</h1>
 <div class="muted">Dinero ficticio · posiciones públicas de Hyperliquid leídas cada minuto · actualizado <b>{madrid(now_utc()):%d/%m/%Y %H:%M}</b> (hora de Madrid)</div></div></div>
 {copy_html}
@@ -1360,6 +1365,11 @@ def main():
             except Exception as ex:
                 log(f"[{acc['id']}] error: {ex!r}")
                 if once: traceback.print_exc()
+        try:
+            import btc_paper; btc_paper.step(s, s["fx"], madrid, log)
+        except Exception as ex:
+            log(f"[btc] error: {ex!r}")
+            if once: traceback.print_exc()
         try:
             import copy_trader
             copy_trader.step(s, s["fx"], log=log)
